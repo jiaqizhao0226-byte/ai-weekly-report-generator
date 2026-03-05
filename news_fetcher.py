@@ -1,0 +1,1340 @@
+#!/usr/bin/env python3
+"""
+AI News Fetcher - Fetch AI news from multiple sources
+Uses web search to get real news
+"""
+
+import requests
+import json
+from datetime import datetime, timedelta
+import re
+import os
+import subprocess
+
+def deduplicate_similar_news(news_list):
+    """Group and merge news about the same event using simple text similarity"""
+    if len(news_list) <= 1:
+        return news_list
+    
+    import re
+    
+    def extract_key_terms(title):
+        """Extract key company/product names from title"""
+        # Common AI companies and products
+        key_terms = []
+        title_lower = title.lower()
+        
+        companies = ['openai', 'anthropic', 'google', 'meta', 'microsoft', 'nvidia',
+                    '阿里', '字节', '腾讯', '百度', '华为', 'deepseek', '智谱', '月之暗面']
+        products = ['gpt', 'claude', 'gemini', 'llama', '千问', 'qwen', '文心', '混元', 
+                   '豆包', 'kimi', 'sora', 'midjourney']
+        
+        for term in companies + products:
+            if term in title_lower:
+                key_terms.append(term)
+        
+        # Extract numbers (funding amounts, etc)
+        numbers = re.findall(r'\d+(?:亿|万|billion|million)?', title)
+        key_terms.extend(numbers[:2])
+        
+        return set(key_terms)
+    
+    def is_similar(title1, title2):
+        """Check if two titles are about the same event"""
+        terms1 = extract_key_terms(title1)
+        terms2 = extract_key_terms(title2)
+        
+        if not terms1 or not terms2:
+            return False
+        
+        # If they share 2+ key terms, likely same event
+        common = terms1 & terms2
+        return len(common) >= 2
+    
+    # Group similar news
+    groups = []
+    used = set()
+    
+    for i, news in enumerate(news_list):
+        if i in used:
+            continue
+        
+        group = [news]
+        used.add(i)
+        
+        for j, other in enumerate(news_list[i+1:], i+1):
+            if j in used:
+                continue
+            if is_similar(news['title'], other['title']):
+                group.append(other)
+                used.add(j)
+        
+        groups.append(group)
+    
+    # Merge each group into single news item
+    merged_news = []
+    for group in groups:
+        if len(group) == 1:
+            merged_news.append(group[0])
+        else:
+            # Use the one with highest importance as base
+            group.sort(key=lambda x: x.get('importance', 0), reverse=True)
+            best = group[0].copy()
+            
+            # Combine descriptions from all sources
+            all_descs = [n.get('description', '') for n in group if n.get('description')]
+            if all_descs:
+                best['description'] = ' '.join(all_descs)[:500]
+            
+            # Mark as merged
+            best['merged_count'] = len(group)
+            best['sources'] = [n.get('source', '') for n in group]
+            
+            merged_news.append(best)
+    
+    return merged_news
+
+def rewrite_news_professional(title, description, date_full='', max_chars=280):
+    """Rewrite news in professional tone using Qwen API"""
+    import os
+    api_key = os.environ.get('QWEN_API_KEY', '')
+    if not api_key:
+        # Fallback: just truncate
+        text = f"{title}：{date_full}，{description}" if date_full else f"{title}：{description}"
+        return text[:max_chars] if len(text) > max_chars else text
+    
+    try:
+        original = f"{title}。{description}" if description else title
+        
+        # Ensure date is in correct format
+        date_instruction = ""
+        if date_full:
+            date_instruction = '\n8. 【重要】正文必须以"' + date_full + '"开头，这是事件的实际发生日期，不要修改或编造其他日期'
+        
+        prompt = f"""请将以下AI行业新闻改写为专业、商业、中立的风格，用于企业周报PPT。
+
+要求：
+1. 内容要详细充实，目标180-200字左右，不要太短
+2. 专注于新闻事件本身的具体细节（数据、时间、参与方、技术参数等），不要过度引申意义或价值
+3. 去除营销号/标题党风格（如"震惊"、"666"、"必看"等），也不要加"意义重大"、"影响深远"等空话
+4. 使用专业术语和中立客观的表述，像写新闻报道一样简洁陈述事实
+5. 包含关键信息：公司名、产品名、具体数据、时间、技术指标等硬事实
+6. 格式：事件概括标题（15-25字）+中文冒号"："+ 详细内容描述，全部一段话
+7. 总字数控制在200-280字之间，必须写完整句子，不要中途截断
+9. 【标题要求】标题必须概括具体发生了什么事，包含主体+动作+对象，不能用笼统的分类词{date_instruction}
+
+标题bad case（禁止使用）：
+- "AI融资动态" ❌ → "Vision.ai完成10亿美元融资" ✓
+- "人才流动" ❌ → "清华研究员张某加入OpenAI" ✓
+- "模型发布" ❌ → "阿里发布千问3.5系列模型" ✓
+- "行业动态" ❌ → "字节豆包DAU突破千万" ✓
+
+示例：
+阿里发布千问3.5系列模型：2024年2月28日，阿里云正式发布千问3.5系列三款中型模型Qwen-3.5-7B、14B、32B，分别针对轻量部署、均衡性能和复杂任务场景。该系列采用MoE稀疏激活架构，32B模型实际激活参数仅8B。API定价为每百万Token输入0.2元、输出0.6元，支持32K上下文窗口。模型已在魔搭社区开源，提供HuggingFace和vLLM部署方案。
+
+原文：{original}
+事件日期：{date_full if date_full else '未知'}
+
+改写后："""
+
+        response = requests.post(
+            'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                'model': 'qwen-turbo',
+                'messages': [{'role': 'user', 'content': prompt}],
+                'max_tokens': 350,
+                'temperature': 0.7
+            },
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            rewritten = result['choices'][0]['message']['content'].strip()
+            # Let AI handle length naturally - no hard truncation
+            return rewritten
+        else:
+            return f"{title}：{description}"[:max_chars]
+    except Exception as e:
+        return f"{title}：{description}"[:max_chars]
+
+def rewrite_news_batch(news_list, max_chars=220):
+    """Rewrite multiple news items in parallel"""
+    import concurrent.futures
+    import os
+    
+    api_key = os.environ.get('QWEN_API_KEY', '')
+    if not api_key:
+        return news_list
+    
+    def rewrite_one(item):
+        item = item.copy()
+        rewritten = rewrite_news_professional(
+            item.get('title', ''), 
+            item.get('description', ''),
+            item.get('date_full', ''),  # Pass actual event date
+            max_chars
+        )
+        item['rewritten'] = rewritten
+        return item
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(rewrite_one, news_list))
+    
+    return results
+
+def fetch_article_image(url, timeout=5):
+    """Fetch the main image from an article page"""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(url, headers=headers, timeout=timeout)
+        if response.status_code != 200:
+            return None
+        
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Try og:image first (usually the best)
+        og_img = soup.select_one('meta[property="og:image"]')
+        if og_img and og_img.get('content'):
+            og_url = og_img.get('content')
+            # Skip if it's a small placeholder
+            if '100x100' not in og_url and 'logo' not in og_url.lower():
+                return og_url
+        
+        # Look for article images - prefer larger ones
+        candidates = []
+        for img in soup.find_all('img'):
+            src = img.get('src', '') or img.get('data-src', '') or img.get('data-original', '')
+            if src and len(src) > 30:
+                # Skip logos, icons, avatars, small placeholders
+                skip_words = ['logo', 'icon', 'avatar', 'qrcode', 'head.jpg', 'footer', 'sidebar', '100x100', '200x', 'thumb', 'small']
+                if any(w in src.lower() for w in skip_words):
+                    continue
+                # Prefer images with date patterns and full URLs
+                if '/202' in src and ('i.qbitai.com' in src or 'uploads' in src):
+                    # Make absolute URL if needed
+                    if src.startswith('//'):
+                        src = 'https:' + src
+                    elif src.startswith('/'):
+                        from urllib.parse import urlparse
+                        parsed = urlparse(url)
+                        src = f"{parsed.scheme}://{parsed.netloc}{src}"
+                    candidates.append(src)
+        
+        # Return first good candidate (usually the main article image)
+        if candidates:
+            return candidates[0]
+        
+        return None
+    except:
+        return None
+
+def enrich_news_with_images(news_list, max_fetch=20):
+    """Fetch images for news items that don't have images"""
+    import concurrent.futures
+    
+    items_to_fetch = []
+    for i, item in enumerate(news_list[:max_fetch]):
+        if not item.get('image') and item.get('url'):
+            items_to_fetch.append((i, item))
+    
+    if not items_to_fetch:
+        return news_list
+    
+    def fetch_one(args):
+        idx, item = args
+        img = fetch_article_image(item['url'])
+        return idx, img
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(fetch_one, items_to_fetch))
+    
+    for idx, img in results:
+        if img:
+            news_list[idx]['image'] = img
+    
+    return news_list
+
+def fetch_article_date(url, timeout=5):
+    """Fetch publication date from article page"""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(url, headers=headers, timeout=timeout)
+        if response.status_code != 200:
+            return None
+        
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Try common date selectors
+        for selector in ['.date', '.publish-time', '.post-date', '.entry-date', 'time[datetime]', '.article-time']:
+            elem = soup.select_one(selector)
+            if elem:
+                text = elem.get('datetime', '') or elem.text.strip()
+                # Try to parse date
+                date_match = re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', text)
+                if date_match:
+                    return f"{date_match.group(1)}-{date_match.group(2).zfill(2)}-{date_match.group(3).zfill(2)}"
+        
+        # Fallback: search in page text
+        text = soup.get_text()[:2000]
+        date_match = re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})[日]?', text)
+        if date_match:
+            return f"{date_match.group(1)}-{date_match.group(2).zfill(2)}-{date_match.group(3).zfill(2)}"
+        
+        return None
+    except:
+        return None
+
+def enrich_news_with_dates(news_list, max_fetch=30):
+    """Fetch precise dates for news items that don't have dates"""
+    import concurrent.futures
+    
+    # Only fetch for items without proper dates
+    items_to_fetch = []
+    for i, item in enumerate(news_list[:max_fetch]):
+        date = item.get('date', '')
+        # Skip if already has a proper date
+        if date and re.match(r'\d{4}-\d{2}-\d{2}', date):
+            continue
+        if item.get('url'):
+            items_to_fetch.append((i, item))
+    
+    if not items_to_fetch:
+        return news_list
+    
+    # Fetch dates in parallel (faster)
+    def fetch_one(args):
+        idx, item = args
+        date = fetch_article_date(item['url'])
+        return idx, date
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(fetch_one, items_to_fetch))
+    
+    # Update news items with fetched dates
+    for idx, date in results:
+        if date:
+            news_list[idx]['date'] = date
+    
+    return news_list
+
+def fetch_article_content(url, max_chars=500):
+    """Fetch and extract more content from a news article URL"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            return None
+        
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove script and style elements
+        for script in soup(["script", "style", "nav", "footer", "header"]):
+            script.decompose()
+        
+        # Try to find article content
+        article = None
+        for selector in ['article', '.article-content', '.post-content', '.entry-content', 
+                         '.content', 'main', '[itemprop="articleBody"]']:
+            article = soup.select_one(selector)
+            if article:
+                break
+        
+        if not article:
+            article = soup.body
+        
+        if article:
+            # Get text paragraphs
+            paragraphs = article.find_all('p')
+            text_parts = []
+            total_len = 0
+            
+            for p in paragraphs:
+                text = p.get_text().strip()
+                if len(text) > 30:  # Skip very short paragraphs
+                    text_parts.append(text)
+                    total_len += len(text)
+                    if total_len > max_chars:
+                        break
+            
+            if text_parts:
+                return ' '.join(text_parts)[:max_chars]
+        
+        return None
+    except Exception as e:
+        print(f"Fetch article error: {e}")
+        return None
+
+def expand_news_batch(news_list):
+    """Fetch more content from article URLs for news items with short descriptions"""
+    expanded_news = []
+    
+    for news in news_list:
+        url = news.get('url', '')
+        desc = news.get('description', '')
+        
+        # Only fetch more if description is short and we have a URL
+        if len(desc) < 150 and url and url.startswith('http'):
+            extra_content = fetch_article_content(url)
+            if extra_content and len(extra_content) > len(desc):
+                news = news.copy()
+                news['description'] = extra_content
+        
+        expanded_news.append(news)
+    
+    return expanded_news
+
+# Category keywords
+# === Category 1: 模型动态 - 底层模型相关 ===
+MODEL_NAMES = [
+    'gpt-4', 'gpt-5', 'gpt4', 'gpt5', 'claude', 'gemini', 'llama', 'mistral', 
+    'qwen', '千问', '通义千问', 'deepseek', 'glm', 'chatglm', '文心一言', 
+    '混元', 'kimi', 'moonshot', 'sora', 'midjourney', 'stable diffusion',
+    'dall-e', 'flux', 'cogvideo', 'kling', '可灵'
+]
+
+MODEL_KEYWORDS = [
+    '大模型', 'llm', '语言模型', '多模态', 'multimodal', '开源模型',
+    'parameter', '参数', 'benchmark', '基准测试', 'training', '训练',
+    'fine-tune', '微调', 'weights', '权重', 'transformer', 'diffusion',
+    'token', '上下文', 'context window', '架构', 'architecture',
+    '模型发布', '模型升级', '开源', 'open source', '性能超越'
+]
+
+# === Category 2: 应用动态 - 基于模型的应用 ===
+APP_KEYWORDS = [
+    '元宝', 'chatgpt', '豆包app', 'copilot', 'ai助手', 'ai应用',
+    '智能助手', '对话助手', '写作助手', '编程助手', 'ai搜索',
+    '应用上线', '产品发布', '新功能', '用户数', '月活', 'dau',
+    'app store', '下载量', '使用量', 'api调用', '插件', 'plugin',
+    '接入', '集成', '落地应用', '商业化', 'to b', 'to c'
+]
+
+# === Category 3: 厂商&投融资动态 ===
+COMPANY_KEYWORDS = [
+    # 人员变动
+    '跳槽', '加盟', '离职', '入职', '挖人', '高管', 'ceo', 'cto', 
+    '创始人', '首席', '负责人', '团队',
+    # 公司动态  
+    '裁员', '招聘', '扩张', '业务', '战略', '合作', '收购', '并购',
+    '拆分', '独立', '子公司', '新业务', '转型',
+    # 投融资
+    '融资', '投资', '估值', 'ipo', '上市', '亿美元', '亿元', 
+    '轮融资', 'a轮', 'b轮', 'c轮', '种子轮', '天使轮',
+    '投资方', '领投', '跟投'
+]
+
+# Legacy - keep for compatibility
+INVEST_KEYWORDS = COMPANY_KEYWORDS
+
+GAMING_KEYWORDS = [
+    'game', 'gaming', '游戏', 'video game', '手游', '端游',
+    'unity', 'unreal', 'epic games', 'ubisoft', 'npc对话', 'npc ai',
+    '网易游戏', 'mihoyo', '米哈游', 'activision', 'ea games',
+    'playstation', 'xbox', 'nintendo', 'steam',
+    '原神', '王者荣耀', '逆水寒', '刺客信条'
+]
+
+def categorize_news(title, description):
+    """Categorize news into model/application/investment (company dynamics)
+    
+    Categories:
+    - model: 底层模型动态（模型发布、性能、开源等）
+    - application: 应用动态（基于模型的产品和应用）  
+    - investment: 厂商&投融资（人员变动、公司动态、融资）
+    """
+    text = (title + ' ' + description).lower()
+    
+    # === FIRST: Check for clear APP indicators (override model names) ===
+    app_strong_keywords = ['app store', 'app下载', '下载量', '用户数', '月活', 'dau', 
+                          '登顶', '榜首', '免单', '红包', '补贴', 'app', '客户端']
+    is_app_news = any(k in text for k in app_strong_keywords)
+    
+    # === SECOND: Check for clear COMPANY indicators ===
+    company_strong = ['跳槽', '加盟', '离职', '入职', '挖人', '裁员', '招聘',
+                     '融资', 'ipo', '上市', '估值', '亿美元', '亿元', '投资']
+    is_company_news = any(k in text for k in company_strong)
+    
+    # === If clear APP news, return application ===
+    if is_app_news and not is_company_news:
+        return 'application'
+    
+    # === If clear COMPANY news, return investment ===
+    if is_company_news:
+        return 'investment'
+    
+    # === Otherwise, score-based categorization ===
+    # Model: check for model names + model-specific context
+    model_score = 0
+    has_model_name = any(name in text for name in MODEL_NAMES)
+    
+    if has_model_name:
+        # Model name alone is not enough - need model-specific context
+        model_context = ['发布', '开源', '升级', '参数', '性能', '基准', 'benchmark',
+                        '训练', '架构', '多模态', 'token', '上下文', '权重']
+        if any(k in text for k in model_context):
+            model_score = 20
+        else:
+            model_score = 5  # Low score if no model context
+    
+    model_score += sum(3 if k in text else 0 for k in MODEL_KEYWORDS)
+    
+    # Application score
+    app_score = sum(4 if k in text else 0 for k in APP_KEYWORDS)
+    
+    # Company score (lower priority here since strong cases handled above)
+    company_score = sum(3 if k in text else 0 for k in COMPANY_KEYWORDS)
+    
+    # Determine category
+    max_score = max(model_score, app_score, company_score)
+    
+    if max_score == 0:
+        return 'application'  # default
+    
+    if model_score == max_score:
+        return 'model'
+    elif company_score > app_score:
+        return 'investment'
+    else:
+        return 'application'
+
+def is_gaming_related(title, description):
+    """Check if news is gaming/entertainment related"""
+    text = (title + ' ' + description).lower()
+    return any(k in text for k in GAMING_KEYWORDS)
+
+def calculate_importance(news_item):
+    """Calculate importance score (0-100) - focus on truly important news"""
+    score = 30
+    
+    title = news_item.get('title', '')
+    title_lower = title.lower()
+    desc = news_item.get('description', '').lower()
+    text = title_lower + ' ' + desc
+    
+    # === TIER 1: Major AI Companies (high weight) ===
+    tier1_companies = ['openai', 'anthropic', 'google', 'deepmind', 'microsoft', 
+                       'meta', 'nvidia', 'apple',
+                       '字节', 'bytedance', '百度', 'baidu', '阿里', 'alibaba', 
+                       '腾讯', 'tencent', '华为', 'huawei']
+    tier1_found = sum(1 for co in tier1_companies if co in text)
+    score += min(tier1_found * 12, 25)
+    
+    # === TIER 2: Important AI startups ===
+    tier2_companies = ['deepseek', '深度求索', '智谱', 'zhipu', 'moonshot', '月之暗面',
+                       '阶跃', 'minimax', '零一万物', 'mistral', 'cohere', 'perplexity',
+                       '商汤', 'sensetime', '科大讯飞', 'iflytek']
+    tier2_found = sum(1 for co in tier2_companies if co in text)
+    score += min(tier2_found * 8, 15)
+    
+    # === Major Model Names ===
+    models = ['gpt-4', 'gpt-5', 'gpt4', 'gpt5', 'claude', 'gemini', 'llama', 
+              'qwen', '千问', 'mistral', 'sora', 'midjourney', 'stable diffusion',
+              '文心', '混元', '豆包', 'doubao', 'kimi', '通义']
+    if any(m in text for m in models):
+        score += 12
+    
+    # === Large Funding (very important) ===
+    import re
+    # Match patterns like "100亿", "10亿美元", "$1B", "1000万"
+    if re.search(r'(\d+0亿|百亿|千亿|\$\d+[bB]|十亿|融资.{0,5}\d+亿)', title):
+        score += 20
+    elif re.search(r'(亿美元|亿元|亿|billion|million)', text):
+        score += 10
+    
+    # === IPO/上市/收购 (big news) ===
+    if any(x in text for x in ['ipo', '上市', '收购', 'acquisition', '并购', '合并']):
+        score += 15
+    
+    # === New Product/Model Release ===
+    if any(x in title for x in ['发布', '推出', '上线', 'release', 'launch', '开源']):
+        score += 8
+    
+    # === Gaming/Entertainment (priority per Kiki) ===
+    if is_gaming_related(title, desc):
+        score += 12
+    
+    # === Technical breakthrough ===
+    if any(x in text for x in ['突破', 'breakthrough', '首次', 'first', '超越', 'surpass',
+                                '世界第一', '全球首', '最强', '最大']):
+        score += 8
+    
+    # === Application metrics / User data (per Kiki) ===
+    app_metrics = ['用户数', '日活', '月活', 'dau', 'mau', '活跃用户', 
+                   '营收', '收入', 'revenue', 'arr', 'mrr', '下载量', 'downloads',
+                   '付费用户', '订阅', 'subscribers', '增长', 'growth']
+    if any(x in text for x in app_metrics):
+        score += 10
+    
+    # === Major apps adding AI (per Kiki) ===
+    major_apps = ['微信', 'wechat', '抖音', 'tiktok', '淘宝', '支付宝', 
+                  'instagram', 'whatsapp', 'spotify', 'netflix', 'adobe',
+                  'notion', 'figma', 'canva', 'slack', 'zoom', 'office', 'word', 'excel']
+    if any(app in text for app in major_apps) and any(ai in text for ai in ['ai', '智能', '模型', 'gpt', 'copilot']):
+        score += 12
+    
+    # === AI Policy/Regulation (per Kiki) ===
+    policy_keywords = ['政策', '监管', '法规', '立法', '合规', 'regulation', 'policy',
+                       '白宫', '国务院', '工信部', '网信办', '欧盟', 'eu ai act',
+                       '安全法', '治理', 'governance', '规范']
+    if any(x in text for x in policy_keywords):
+        score += 10
+    
+    # === Penalize clickbait/low quality ===
+    clickbait = ['震惊', '必看', '不敢相信', '99%的人', '你不知道', '竟然']
+    if any(x in title for x in clickbait):
+        score -= 15
+    
+    # === Penalize very short titles (likely low quality) ===
+    if len(title) < 15:
+        score -= 10
+    
+    return min(100, max(0, score))
+
+def search_brave(query, count=10):
+    """Search using Brave Search API"""
+    api_key = os.environ.get('BRAVE_API_KEY', '')
+    if not api_key:
+        return []
+    
+    try:
+        headers = {
+            'X-Subscription-Token': api_key,
+            'Accept': 'application/json'
+        }
+        params = {
+            'q': query,
+            'count': count,
+            'freshness': 'pw'  # past week
+        }
+        
+        response = requests.get(
+            'https://api.search.brave.com/res/v1/news/search',
+            headers=headers,
+            params=params,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for r in data.get('results', []):
+                results.append({
+                    'title': r.get('title', ''),
+                    'description': r.get('description', ''),
+                    'url': r.get('url', ''),
+                    'source': r.get('meta_url', {}).get('netloc', r.get('source', 'Unknown')),
+                    'date': r.get('age', ''),
+                    'image': r.get('thumbnail', {}).get('src', '') if isinstance(r.get('thumbnail'), dict) else ''
+                })
+            return results
+    except Exception as e:
+        print(f"Brave search error: {e}")
+    
+    return []
+
+def search_web_general(query):
+    """General web search fallback"""
+    # Could integrate other search APIs here
+    return []
+
+def scrape_36kr(max_pages=10):
+    """Scrape AI news from 36kr - multiple pages for historical coverage"""
+    results = []
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    try:
+        from bs4 import BeautifulSoup
+        
+        # Fetch many pages for historical coverage
+        for page in range(1, max_pages + 1):
+            try:
+                url = f'https://36kr.com/information/AI/' if page == 1 else f'https://36kr.com/information/AI/?page={page}'
+                r = requests.get(url, headers=headers, timeout=10)
+                soup = BeautifulSoup(r.text, 'html.parser')
+                
+                # Find article items
+                articles = soup.select('.article-item-info, .flow-item, .article-wrapper')
+                for article in articles:
+                    title_elem = article.select_one('.article-item-title, h2 a, .title a')
+                    desc_elem = article.select_one('.article-item-description, .summary, .desc')
+                    link_elem = article.select_one('a[href*="/p/"]')
+                    time_elem = article.select_one('.time, .date, time')
+                    
+                    if title_elem:
+                        title = title_elem.text.strip()
+                        desc = desc_elem.text.strip() if desc_elem else ''
+                        href = link_elem.get('href', '') if link_elem else ''
+                        article_url = 'https://36kr.com' + href if href and not href.startswith('http') else href
+                        date_text = time_elem.text.strip() if time_elem else ''
+                        
+                        if title and len(title) > 5:
+                            results.append({
+                                'title': title,
+                                'description': desc,
+                                'url': article_url,
+                                'source': '36kr.com',
+                                'date': date_text,
+                                'image': ''
+                            })
+            except Exception as e:
+                continue
+    except Exception as e:
+        print(f"36kr scrape error: {e}")
+    
+    # Deduplicate by title
+    seen = set()
+    unique = []
+    for r in results:
+        if r['title'] not in seen:
+            seen.add(r['title'])
+            unique.append(r)
+    
+    return unique
+
+def scrape_qbitai(max_pages=10):
+    """Scrape AI news from 量子位 - multiple pages for historical coverage"""
+    results = []
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    try:
+        from bs4 import BeautifulSoup
+        import re
+        
+        seen = set()
+        
+        # Scrape multiple pages
+        for page in range(1, max_pages + 1):
+            try:
+                url = f'https://www.qbitai.com/page/{page}' if page > 1 else 'https://www.qbitai.com/'
+                r = requests.get(url, headers=headers, timeout=10)
+                soup = BeautifulSoup(r.text, 'html.parser')
+                
+                # Find articles with date-based URLs
+                for a in soup.find_all('a', href=True):
+                    href = a.get('href', '')
+                    text = a.text.strip()
+                    
+                    # Match article URLs like /2026/02/382934.html
+                    if len(text) > 15 and re.search(r'/20\d{2}/\d{2}/\d+\.html', href):
+                        if text not in seen:
+                            seen.add(text)
+                            # Extract year/month from URL (day not available, estimate from article ID)
+                            date_match = re.search(r'/(\d{4})/(\d{2})/(\d+)\.html', href)
+                            if date_match:
+                                year, month, article_id = date_match.groups()
+                                # Estimate day based on current page (rough approximation)
+                                estimated_day = max(1, 28 - (page - 1) * 3)
+                                date_str = f"{year}-{month}-{estimated_day:02d}"
+                            else:
+                                date_str = ''
+                            
+                            results.append({
+                                'title': text,
+                                'description': '',
+                                'url': href if href.startswith('http') else 'https://www.qbitai.com' + href,
+                                'source': 'qbitai.com',
+                                'date': date_str,
+                                'image': ''
+                            })
+            except:
+                continue
+    except Exception as e:
+        print(f"qbitai scrape error: {e}")
+    
+    return results
+
+def scrape_huxiu(max_pages=5):
+    """Scrape AI news from 虎嗅 - multiple pages"""
+    results = []
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    try:
+        from bs4 import BeautifulSoup
+        
+        seen = set()
+        
+        # Try homepage and channel pages
+        urls = ['https://www.huxiu.com/']
+        for page in range(2, max_pages + 1):
+            urls.append(f'https://www.huxiu.com/?page={page}')
+        
+        for page_url in urls:
+            try:
+                r = requests.get(page_url, headers=headers, timeout=15)
+                soup = BeautifulSoup(r.text, 'html.parser')
+                
+                for a in soup.find_all('a', href=True):
+                    href = a.get('href', '')
+                    text = a.text.strip()
+                    
+                    if '/article/' in href and len(text) > 15:
+                        if text not in seen:
+                            seen.add(text)
+                            url = href if href.startswith('http') else 'https://www.huxiu.com' + href
+                            results.append({
+                                'title': text,
+                                'description': '',
+                                'url': url,
+                                'source': 'huxiu.com',
+                                'date': '',
+                                'image': ''
+                            })
+            except:
+                continue
+    except Exception as e:
+        print(f"huxiu scrape error: {e}")
+    
+    return results
+
+def scrape_jiqizhixin():
+    """Scrape AI news from 机器之心"""
+    results = []
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    try:
+        from bs4 import BeautifulSoup
+        # Try their article list API or homepage
+        r = requests.get('https://www.jiqizhixin.com/articles', headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        
+        # Find article links
+        seen = set()
+        for a in soup.find_all('a', href=True):
+            href = a.get('href', '')
+            text = a.text.strip()
+            
+            if '/article/' in href and len(text) > 10:
+                if text not in seen:
+                    seen.add(text)
+                    results.append({
+                        'title': text,
+                        'description': '',
+                        'url': href if href.startswith('http') else 'https://www.jiqizhixin.com' + href,
+                        'source': 'jiqizhixin.com',
+                        'date': '',
+                        'image': ''
+                    })
+                    if len(results) >= 10:
+                        break
+    except Exception as e:
+        print(f"jiqizhixin scrape error: {e}")
+    
+    return results
+
+def scrape_xinzhiyuan():
+    """Scrape AI news from 新智元"""
+    results = []
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    try:
+        from bs4 import BeautifulSoup
+        import re
+        
+        # 新智元的文章页面
+        r = requests.get('https://www.xinzhiyuan.com/articleList', headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        
+        seen = set()
+        # 尝试多种选择器
+        for article in soup.find_all(['article', 'div'], class_=re.compile(r'article|post|item|news')):
+            a = article.find('a', href=True)
+            if not a:
+                continue
+            
+            href = a.get('href', '')
+            title_elem = article.find(['h2', 'h3', 'h4', 'a'])
+            title = title_elem.text.strip() if title_elem else a.text.strip()
+            
+            # 提取描述
+            desc_elem = article.find(['p', 'div'], class_=re.compile(r'desc|summary|excerpt|content'))
+            desc = desc_elem.text.strip()[:200] if desc_elem else ''
+            
+            if len(title) > 10 and title not in seen:
+                seen.add(title)
+                url = href if href.startswith('http') else 'https://www.xinzhiyuan.com' + href
+                results.append({
+                    'title': title,
+                    'description': desc,
+                    'url': url,
+                    'source': 'xinzhiyuan.com',
+                    'date': '',
+                    'image': ''
+                })
+                if len(results) >= 15:
+                    break
+        
+        # 如果上面没抓到，尝试备用方式
+        if not results:
+            for a in soup.find_all('a', href=True):
+                href = a.get('href', '')
+                text = a.text.strip()
+                if '/article/' in href and len(text) > 15 and text not in seen:
+                    seen.add(text)
+                    results.append({
+                        'title': text,
+                        'description': '',
+                        'url': href if href.startswith('http') else 'https://www.xinzhiyuan.com' + href,
+                        'source': 'xinzhiyuan.com',
+                        'date': '',
+                        'image': ''
+                    })
+                    if len(results) >= 15:
+                        break
+                        
+    except Exception as e:
+        print(f"xinzhiyuan scrape error: {e}")
+    
+    return results
+
+def fetch_rss_feed(url, source_name='RSS', max_items=20):
+    """通用RSS订阅源抓取"""
+    results = []
+    try:
+        import feedparser
+        feed = feedparser.parse(url)
+        
+        for entry in feed.entries[:max_items]:
+            title = entry.get('title', '')
+            description = entry.get('summary', entry.get('description', ''))
+            # 清理HTML标签
+            description = re.sub(r'<[^>]+>', '', description)[:300]
+            
+            link = entry.get('link', '')
+            pub_date = ''
+            if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                try:
+                    pub_date = datetime(*entry.published_parsed[:6]).strftime('%Y-%m-%d')
+                except:
+                    pass
+            
+            if title:
+                results.append({
+                    'title': title,
+                    'description': description,
+                    'url': link,
+                    'source': source_name,
+                    'date': pub_date,
+                    'image': ''
+                })
+    except Exception as e:
+        print(f"RSS fetch error ({source_name}): {e}")
+    
+    return results
+
+# RSS源配置 - 使用本地 WeWe RSS 服务
+WEWE_RSS_BASE = 'http://localhost:4000/feeds'
+RSS_FEEDS = {
+    '量子位': f'{WEWE_RSS_BASE}/MP_WXS_3236757533.rss',
+    '机器之心': f'{WEWE_RSS_BASE}/MP_WXS_3073282833.rss',
+    '新智元': f'{WEWE_RSS_BASE}/MP_WXS_3271041950.rss',
+}
+
+def fetch_all_rss_feeds():
+    """抓取所有配置的RSS源"""
+    all_results = []
+    for name, url in RSS_FEEDS.items():
+        print(f"Fetching RSS: {name}...")
+        results = fetch_rss_feed(url, name)
+        all_results.extend(results)
+        print(f"  Got {len(results)} articles")
+    return all_results
+
+def extract_event_date_from_content(text):
+    """从文章内容中提取实际事件发生日期"""
+    import re
+    
+    # 匹配各种日期格式
+    patterns = [
+        r'(\d{4})年(\d{1,2})月(\d{1,2})日',  # 2024年3月1日
+        r'(\d{4})-(\d{1,2})-(\d{1,2})',       # 2024-03-01
+        r'(\d{4})/(\d{1,2})/(\d{1,2})',       # 2024/03/01
+        r'(\d{1,2})月(\d{1,2})日',            # 3月1日 (当年)
+    ]
+    
+    from datetime import datetime
+    dates_found = []
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, text[:500])  # 只看前500字符
+        for match in matches:
+            try:
+                if len(match) == 3:
+                    year, month, day = int(match[0]), int(match[1]), int(match[2])
+                    if year < 100:
+                        year += 2000
+                elif len(match) == 2:
+                    year = datetime.now().year
+                    month, day = int(match[0]), int(match[1])
+                else:
+                    continue
+                    
+                if 2020 <= year <= 2030 and 1 <= month <= 12 and 1 <= day <= 31:
+                    dates_found.append(datetime(year, month, day))
+            except:
+                continue
+    
+    if dates_found:
+        # 返回最早的日期（通常是事件发生日期）
+        return min(dates_found).strftime('%Y-%m-%d')
+    return None
+
+def is_timely_news(news_item, max_days=14):
+    """判断新闻是否有时效性（不是旧事重提）"""
+    from datetime import datetime, timedelta
+    
+    # 如果有提取到的事件日期，检查是否在时间范围内
+    event_date = news_item.get('event_date')
+    if event_date:
+        try:
+            event_dt = datetime.strptime(event_date, '%Y-%m-%d')
+            if datetime.now() - event_dt > timedelta(days=max_days):
+                return False
+        except:
+            pass
+    
+    # 检查标题/描述中的关键词，识别回顾性文章
+    text = (news_item.get('title', '') + news_item.get('description', '')).lower()
+    retrospective_keywords = ['回顾', '盘点', '复盘', '去年', '历史', '曾经', '此前', '早在']
+    for kw in retrospective_keywords:
+        if kw in text:
+            return False
+    
+    return True
+
+def get_ai_news(days=7):
+    """Get AI news from Chinese sources - fetch more pages for longer time ranges"""
+    all_news = []
+    
+    # Calculate pages based on days (roughly 1 page per 3 days)
+    pages = max(3, min(15, days // 3 + 1))
+    
+    # Chinese sources via scraping
+    print("Fetching from 量子位...")
+    all_news.extend(scrape_qbitai(max_pages=pages))
+    print(f"  Got {len(all_news)} articles")
+    
+    # 36kr disabled per Kiki's request
+    # print("Fetching from 36kr...")
+    # kr_news = scrape_36kr(max_pages=pages)
+    # all_news.extend(kr_news)
+    # print(f"  Got {len(kr_news)} articles")
+    
+    # 尝试从RSS源获取（机器之心、新智元等）
+    print("Fetching from RSS feeds...")
+    rss_news = fetch_all_rss_feeds()
+    all_news.extend(rss_news)
+    
+    # 备用：如果RSS没抓到，尝试直接爬取
+    if not any(n.get('source') == '机器之心' for n in all_news):
+        print("Fetching from 机器之心 (scrape fallback)...")
+        jqzx_news = scrape_jiqizhixin()
+        all_news.extend(jqzx_news)
+        print(f"  Got {len(jqzx_news)} articles")
+    
+    if not any(n.get('source') == '新智元' for n in all_news):
+        print("Fetching from 新智元 (scrape fallback)...")
+        xzy_news = scrape_xinzhiyuan()
+        all_news.extend(xzy_news)
+        print(f"  Got {len(xzy_news)} articles")
+    
+    # If no real news, use sample
+    if not all_news:
+        all_news = get_sample_news()
+    
+    # Deduplicate by URL and title
+    seen_urls = set()
+    seen_titles = set()
+    unique_news = []
+    for item in all_news:
+        url = item.get('url', '')
+        title = item.get('title', '')[:30]  # First 30 chars for title matching
+        
+        # Skip if we've seen this URL or very similar title
+        if url and url in seen_urls:
+            continue
+        if title and title in seen_titles:
+            continue
+            
+        if url:
+            seen_urls.add(url)
+        if title:
+            seen_titles.add(title)
+            
+        item['category'] = categorize_news(item.get('title', ''), item.get('description', ''))
+        item['gaming_related'] = is_gaming_related(item.get('title', ''), item.get('description', ''))
+        item['importance'] = calculate_importance(item)
+        
+        # 尝试提取实际事件日期
+        text = item.get('title', '') + ' ' + item.get('description', '')
+        event_date = extract_event_date_from_content(text)
+        if event_date:
+            item['event_date'] = event_date
+        
+        # 过滤掉旧事重提的文章
+        if not is_timely_news(item, max_days=days + 7):
+            continue
+            
+        unique_news.append(item)
+    
+    # Sort by importance
+    unique_news.sort(key=lambda x: x.get('importance', 0), reverse=True)
+    
+    # Deduplicate similar news (merge articles about same event)
+    unique_news = deduplicate_similar_news(unique_news)
+    
+    # Fetch precise dates and images for top news items
+    top_news = unique_news[:50]
+    top_news = enrich_news_with_dates(top_news, max_fetch=30)
+    top_news = enrich_news_with_images(top_news, max_fetch=20)
+    
+    return top_news
+
+def format_news_for_display(news_list):
+    """Format news with proper date display"""
+    for item in news_list:
+        if 'category' not in item:
+            item['category'] = categorize_news(item.get('title', ''), item.get('description', ''))
+        if 'importance' not in item:
+            item['importance'] = calculate_importance(item)
+        if 'gaming_related' not in item:
+            item['gaming_related'] = is_gaming_related(item.get('title', ''), item.get('description', ''))
+        
+        # Format date - convert relative dates to actual dates
+        date_str = item.get('date', '')
+        dt = None
+        
+        if date_str:
+            # Try parsing relative dates like "3 days ago", "1 hour ago"
+            date_lower = date_str.lower()
+            if 'ago' in date_lower or '前' in date_str:
+                import re
+                now = datetime.now()
+                
+                # English patterns
+                if 'hour' in date_lower or 'minute' in date_lower:
+                    dt = now  # Same day
+                elif match := re.search(r'(\d+)\s*day', date_lower):
+                    days = int(match.group(1))
+                    dt = now - timedelta(days=days)
+                elif match := re.search(r'(\d+)\s*week', date_lower):
+                    weeks = int(match.group(1))
+                    dt = now - timedelta(weeks=weeks)
+                    
+                # Chinese patterns  
+                elif match := re.search(r'(\d+)\s*天前', date_str):
+                    days = int(match.group(1))
+                    dt = now - timedelta(days=days)
+                elif match := re.search(r'(\d+)\s*小时前', date_str):
+                    dt = now
+                elif match := re.search(r'(\d+)\s*周前', date_str):
+                    weeks = int(match.group(1))
+                    dt = now - timedelta(weeks=weeks)
+            
+            # Try standard date formats
+            if not dt:
+                for fmt in ['%Y-%m-%d', '%Y年%m月%d日', '%b %d, %Y', '%B %d, %Y', '%Y/%m/%d']:
+                    try:
+                        dt = datetime.strptime(date_str[:10] if len(date_str) >= 10 else date_str, fmt)
+                        break
+                    except:
+                        continue
+        
+        # If still no date, use today
+        if not dt:
+            dt = datetime.now()
+        
+        item['date_display'] = dt.strftime('%m月%d日')
+        item['date_full'] = dt.strftime('%Y年%m月%d日')
+    
+    return news_list
+
+def get_sample_news():
+    """Sample news for testing - detailed descriptions matching sample PPT style (150-350 chars)"""
+    return [
+        {
+            'title': 'OpenAI发布GPT-5，推理能力实现重大突破',
+            'description': 'OpenAI正式发布GPT-5模型，在复杂推理、代码生成、多模态理解等方面取得重大突破。GPT-5采用全新的混合专家架构（MoE），参数量达到1.8万亿，支持100万token上下文窗口。在多个基准测试中，GPT-5的表现已超越人类专家水平，特别是在数学推理和科学问答领域。OpenAI表示该模型将分阶段向ChatGPT Plus用户和API开发者开放。',
+            'url': 'https://openai.com/blog/gpt5',
+            'source': 'openai.com',
+            'date': '2024-03-20',
+            'image': ''
+        },
+        {
+            'title': 'Claude 3.5 Opus发布，支持200K上下文窗口',
+            'description': 'Anthropic正式推出Claude 3.5 Opus模型，支持200K token超长上下文窗口，可处理约50万字的文档内容。新模型在代码生成和数学推理任务中表现尤为出色，MATH基准测试得分达到92.3%。Claude 3.5 Opus还引入了"工件"功能，可在对话中创建和编辑代码、文档等内容。该模型已面向Claude Pro用户开放，API价格保持不变。',
+            'url': 'https://anthropic.com/claude35',
+            'source': 'anthropic.com',
+            'date': '2024-03-19',
+            'image': ''
+        },
+        {
+            'title': 'Google发布Gemini 2.0，原生多模态架构重新定义AI交互',
+            'description': 'Google DeepMind正式发布Gemini 2.0系列模型，采用全新的原生多模态架构，可同时处理文本、图像、音频和视频输入，并生成多种格式的输出。Gemini 2.0 Ultra在MMLU基准测试中得分达到95.2%，超越GPT-4。Google同时宣布将Gemini 2.0集成到Google搜索、Google Workspace和Android系统中，为用户提供更智能的AI助手体验。',
+            'url': 'https://deepmind.google/gemini2',
+            'source': 'deepmind.google',
+            'date': '2024-03-18',
+            'image': ''
+        },
+        {
+            'title': '育碧推出AI驱动的NPC对话系统NEO NPC',
+            'description': '育碧在GDC游戏开发者大会上展示了基于大语言模型的NPC对话系统NEO NPC。该系统可实现游戏角色的自然语言交互，NPC能够根据玩家的行为和对话内容动态调整回应，并记住之前的互动历史。NEO NPC还支持动态剧情生成，可根据玩家选择创造独特的故事线。育碧表示该技术将首先应用于即将发布的《刺客信条》新作中。',
+            'url': 'https://news.ubisoft.com/neo-npc',
+            'source': 'ubisoft.com',
+            'date': '2024-03-17',
+            'image': ''
+        },
+        {
+            'title': 'Unity推出AI Muse工具套件，文字描述即可生成3D游戏场景',
+            'description': 'Unity在GDC大会上正式发布AI Muse工具套件，支持开发者通过文字描述生成完整的3D游戏场景、角色模型和动画。AI Muse基于Unity自研的3D生成模型，可在几分钟内创建高质量的游戏资产。该工具还集成了AI音效生成功能，可根据场景自动生成环境音和背景音乐。Unity表示AI Muse将作为Unity 6的核心功能向所有订阅用户开放。',
+            'url': 'https://unity.com/ai-muse',
+            'source': 'unity.com',
+            'date': '2024-03-16',
+            'image': ''
+        },
+        {
+            'title': 'Adobe Firefly视频生成功能正式上线Creative Cloud',
+            'description': 'Adobe在Creative Cloud中正式集成Firefly Video功能，支持用户通过文本描述生成高质量视频片段。Firefly Video可生成最长30秒的1080p视频，支持多种风格预设和镜头控制选项。此外，该功能还支持视频风格迁移，可将现有视频转换为不同的艺术风格。Adobe表示所有Firefly生成的内容都经过版权安全训练，可用于商业用途。',
+            'url': 'https://adobe.com/firefly-video',
+            'source': 'adobe.com',
+            'date': '2024-03-15',
+            'image': ''
+        },
+        {
+            'title': 'Anthropic完成27.5亿美元融资，估值达到180亿美元',
+            'description': 'AI安全公司Anthropic宣布完成新一轮27.5亿美元融资，由Google领投，Amazon、Spark Capital等跟投，公司估值达到180亿美元。本轮融资将用于扩大算力基础设施、加速Claude模型研发以及扩展企业销售团队。Anthropic表示将继续专注于AI安全研究，确保大语言模型的可靠性和可控性。这是Anthropic成立以来的第四轮大规模融资。',
+            'url': 'https://techcrunch.com/anthropic-funding',
+            'source': 'techcrunch.com',
+            'date': '2024-03-14',
+            'image': ''
+        },
+        {
+            'title': 'OpenAI洽购人形机器人公司Figure AI，加速具身智能布局',
+            'description': '据路透社报道，OpenAI正在洽谈收购人形机器人初创公司Figure AI，交易金额可能超过20亿美元。Figure AI成立于2022年，专注于开发通用人形机器人，其机器人Figure 01已展示了执行复杂操作任务的能力。收购完成后，OpenAI将把GPT模型与Figure的机器人硬件结合，打造具备高级认知能力的智能机器人。这标志着OpenAI正式进军具身智能领域。',
+            'url': 'https://reuters.com/openai-figure',
+            'source': 'reuters.com',
+            'date': '2024-03-13',
+            'image': ''
+        },
+        {
+            'title': '字节跳动发布豆包大模型2.0，中文理解能力大幅提升',
+            'description': '字节跳动正式发布豆包大模型2.0版本，在中文理解、创意写作和逻辑推理能力上实现重大突破。豆包2.0在C-Eval中文基准测试中得分超过90%，位列国内大模型第一梯队。字节同时宣布向开发者免费开放豆包API，每日提供100万token免费调用额度。豆包2.0已集成到抖音、飞书、剪映等字节系产品中，服务数亿用户。',
+            'url': 'https://36kr.com/p/doubao-2',
+            'source': '36kr.com',
+            'date': '2024-03-12',
+            'image': ''
+        },
+        {
+            'title': 'NVIDIA发布Blackwell架构GPU B200，AI算力提升2.5倍',
+            'description': 'NVIDIA在GTC大会上正式发布基于Blackwell架构的新一代GPU B200。相比上一代H100，B200的AI训练性能提升2.5倍，推理性能提升5倍，能效比提升25%。B200采用台积电4nm工艺，集成2080亿晶体管，支持FP4精度计算。NVIDIA CEO黄仁勋表示，Blackwell架构将推动AI从云端延伸到边缘设备，开启AI计算的新时代。',
+            'url': 'https://nvidia.com/blackwell',
+            'source': 'nvidia.com',
+            'date': '2024-03-11',
+            'image': ''
+        },
+        {
+            'title': 'Meta开源Llama 3系列模型，400B版本多项测试超越GPT-4',
+            'description': 'Meta正式开源Llama 3系列大语言模型，包含8B、70B和400B三个版本。其中400B参数版本在MMLU、HumanEval等多项基准测试中超越GPT-4，成为目前最强大的开源模型。Llama 3采用全新的训练方法，数据集规模扩大到15万亿token。Meta表示Llama 3将完全开源，包括模型权重和训练代码，允许研究人员和开发者自由使用和修改。',
+            'url': 'https://ai.meta.com/llama3',
+            'source': 'meta.com',
+            'date': '2024-03-10',
+            'image': ''
+        },
+        {
+            'title': '腾讯混元大模型正式接入微信生态，覆盖12亿用户',
+            'description': '腾讯宣布混元大模型正式接入微信生态系统，包括微信搜一搜、公众号、小程序、视频号等核心场景，覆盖超过12亿月活用户。用户可通过自然语言与微信AI助手交互，获取信息查询、内容创作、翻译等服务。腾讯表示混元模型针对微信场景进行了深度优化，在中文对话和社交场景理解方面具有独特优势。这是国内首个将大模型全面集成到超级App的案例。',
+            'url': 'https://36kr.com/p/tencent-hunyuan',
+            'source': '36kr.com',
+            'date': '2024-03-09',
+            'image': ''
+        },
+        {
+            'title': 'Midjourney发布V7版本，首次支持AI视频生成功能',
+            'description': 'AI图像生成平台Midjourney正式发布V7版本，最大亮点是首次支持文字生成视频功能。用户可通过文本描述生成最长10秒的高质量视频，支持多种风格和分辨率选项。V7在图像生成质量上也有显著提升，人物面部和手部细节更加真实，风格一致性大幅改善。Midjourney表示V7采用了全新的扩散模型架构，生成速度比V6快3倍。',
+            'url': 'https://midjourney.com/v7',
+            'source': 'midjourney.com',
+            'date': '2024-03-08',
+            'image': ''
+        },
+        {
+            'title': 'Mistral AI完成5亿欧元B轮融资，成为欧洲最有价值AI公司',
+            'description': '法国AI初创公司Mistral AI宣布完成5亿欧元B轮融资，由DST Global领投，Lightspeed、a16z等跟投，公司估值达到60亿欧元，成为欧洲最有价值的AI公司。Mistral成立仅一年，已发布多款开源大模型，其Mixtral 8x7B模型性能媲美GPT-3.5。本轮融资将用于扩大研发团队、增加算力投入，并加速企业级产品的商业化落地。',
+            'url': 'https://techcrunch.com/mistral-funding',
+            'source': 'techcrunch.com',
+            'date': '2024-03-07',
+            'image': ''
+        },
+        {
+            'title': '网易伏羲AI全面接入《逆水寒》手游，开创国内游戏AI交互先河',
+            'description': '网易宣布旗下伏羲AI实验室技术全面接入《逆水寒》手游，玩家可与游戏中上千名NPC进行自然语言对话。NPC不仅能理解玩家的问题并给出合理回应，还能根据剧情发展和玩家行为调整性格和态度。此外，伏羲AI还为游戏提供智能剧情生成和个性化任务推荐功能。这是国内首款全面应用大语言模型技术的大型网络游戏，开创了游戏AI交互的新范式。',
+            'url': 'https://163.com/nsh-ai',
+            'source': '163.com',
+            'date': '2024-03-06',
+            'image': ''
+        },
+        {
+            'title': 'Perplexity AI新一轮融资估值达90亿美元，月活突破1亿',
+            'description': '据彭博社报道，AI搜索引擎Perplexity在新一轮融资中估值达到90亿美元，较上轮融资增长3倍。Perplexity月活跃用户已突破1亿，日均搜索量超过5000万次，正在成为Google搜索的有力挑战者。Perplexity的AI搜索引擎可直接给出问题答案并标注信息来源，大幅提升了搜索效率。公司表示将利用新资金扩展企业级产品和国际市场。',
+            'url': 'https://bloomberg.com/perplexity',
+            'source': 'bloomberg.com',
+            'date': '2024-03-05',
+            'image': ''
+        },
+        {
+            'title': 'Suno AI发布V3音乐生成模型，可创作4分钟完整歌曲',
+            'description': 'AI音乐生成平台Suno正式发布V3模型，可根据文本描述生成长达4分钟的完整歌曲，包含人声、乐器和编曲。V3生成的音乐音质接近专业制作水平，支持流行、摇滚、古典等多种曲风。用户可以指定歌词内容、情感基调和音乐风格，Suno会自动生成旋律和编曲。Suno表示V3的训练数据均已获得版权授权，生成的音乐可用于商业用途。',
+            'url': 'https://suno.ai/v3',
+            'source': 'suno.ai',
+            'date': '2024-03-04',
+            'image': ''
+        },
+        {
+            'title': 'xAI发布Grok-2模型，新增实时网络搜索和图像理解能力',
+            'description': 'Elon Musk旗下AI公司xAI正式发布Grok-2模型，新增实时网络搜索和图像理解两大核心能力。Grok-2可以访问X平台的实时数据，为用户提供最新的新闻和趋势分析。图像理解功能支持用户上传图片进行分析和问答。Grok-2目前面向X Premium+订阅用户开放，xAI表示未来还将推出独立的Grok应用程序和API服务。',
+            'url': 'https://x.ai/grok2',
+            'source': 'x.ai',
+            'date': '2024-03-03',
+            'image': ''
+        },
+        {
+            'title': '阿里云开源通义千问72B模型，中英文测试超越Llama 2 70B',
+            'description': '阿里云正式开源通义千问Qwen-72B模型，在多项中英文基准测试中超越Llama 2 70B，成为国内最强开源大模型之一。Qwen-72B支持32K上下文窗口，在代码生成、数学推理和多语言理解方面表现优异。阿里云同时提供完整的商用许可，企业可免费将模型用于商业产品开发。Qwen-72B已在ModelScope和Hugging Face平台上线，支持多种部署方式。',
+            'url': 'https://qwen.aliyun.com',
+            'source': 'aliyun.com',
+            'date': '2024-03-02',
+            'image': ''
+        },
+        {
+            'title': 'Scale AI完成10亿美元融资，估值138亿美元成AI数据龙头',
+            'description': '据TechCrunch报道，AI数据标注公司Scale AI宣布完成10亿美元新一轮融资，公司估值达到138亿美元。Scale AI已成为OpenAI、Google、Meta等头部AI公司的核心数据供应商，为GPT-4、Gemini等模型提供高质量训练数据。Scale AI的数据标注平台结合了人工标注和AI辅助工具，可高效处理图像、文本、音频等多种类型的数据。',
+            'url': 'https://scale.com/funding',
+            'source': 'scale.com',
+            'date': '2024-03-01',
+            'image': ''
+        },
+        {
+            'title': 'Runway发布Gen-3视频生成模型，支持16秒高质量视频创作',
+            'description': 'AI视频生成公司Runway正式发布Gen-3模型，单次可生成长达16秒的高质量视频，分辨率最高支持4K。Gen-3新增了镜头控制功能，用户可以指定摄像机运动、景深和构图方式。模型还支持风格迁移，可将现有视频转换为动画、油画等艺术风格。Runway表示Gen-3的训练采用了自研的时序一致性技术，大幅减少了视频中的闪烁和不连贯问题。',
+            'url': 'https://runway.ml/gen3',
+            'source': 'runway.ml',
+            'date': '2024-02-28',
+            'image': ''
+        },
+        {
+            'title': 'DeepSeek发布V2 MoE架构模型，推理成本仅为GPT-4的1/30',
+            'description': '中国AI公司深度求索正式发布DeepSeek V2模型，采用创新的混合专家（MoE）架构，在保持高性能的同时将推理成本降低90%。DeepSeek V2的API定价仅为GPT-4的1/30，成为目前性价比最高的大模型之一。V2在代码生成和数学推理任务中表现优异，多项指标接近GPT-4水平。DeepSeek表示将继续开源模型权重，推动国内AI技术的发展。',
+            'url': 'https://deepseek.com/v2',
+            'source': 'deepseek.com',
+            'date': '2024-02-27',
+            'image': ''
+        }
+    ]
