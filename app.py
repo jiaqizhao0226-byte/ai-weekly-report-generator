@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from pptx import Presentation
 from pptx.util import Pt, Inches
 from pptx.dml.color import RGBColor
-from news_fetcher import format_news_for_display, get_ai_news, expand_news_batch, rewrite_news_batch
+from news_fetcher import format_news_for_display, get_ai_news, expand_news_batch, rewrite_news_batch, search_wechat_articles
 
 app = Flask(__name__)
 CORS(app)
@@ -398,6 +398,24 @@ def api_search():
     news = format_news_for_display(news)
     news.sort(key=lambda x: x.get('importance', 0), reverse=True)
     return jsonify({'news': news, 'count': len(news)})
+
+@app.route('/api/keyword-search', methods=['POST'])
+def api_keyword_search():
+    """关键词搜索公众号文章"""
+    data = request.json
+    keywords = data.get('keywords', '')
+    days = data.get('days', 7)
+
+    if not keywords or not keywords.strip():
+        return jsonify({'success': False, 'error': '请输入搜索关键词'}), 400
+
+    try:
+        results = search_wechat_articles(keywords, days=days)
+        results = format_news_for_display(results)
+        return jsonify({'success': True, 'news': results, 'count': len(results)})
+    except Exception as e:
+        import traceback
+        return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()}), 500
 
 @app.route('/api/fetch-url', methods=['POST'])
 def api_fetch_url():

@@ -522,12 +522,12 @@ def calculate_importance(news_item):
     text = title_lower + ' ' + desc
     
     # === TIER 1: Major AI Companies (high weight) ===
-    tier1_companies = ['openai', 'anthropic', 'google', 'deepmind', 'microsoft', 
+    tier1_companies = ['openai', 'anthropic', 'google', 'deepmind', 'microsoft',
                        'meta', 'nvidia', 'apple',
-                       '字节', 'bytedance', '百度', 'baidu', '阿里', 'alibaba', 
+                       '字节', 'bytedance', '百度', 'baidu', '阿里', 'alibaba',
                        '腾讯', 'tencent', '华为', 'huawei']
     tier1_found = sum(1 for co in tier1_companies if co in text)
-    score += min(tier1_found * 12, 25)
+    score += min(tier1_found * 12, 30)
     
     # === TIER 2: Important AI startups ===
     tier2_companies = ['deepseek', '深度求索', '智谱', 'zhipu', 'moonshot', '月之暗面',
@@ -537,27 +537,34 @@ def calculate_importance(news_item):
     score += min(tier2_found * 8, 15)
     
     # === Major Model Names ===
-    models = ['gpt-4', 'gpt-5', 'gpt4', 'gpt5', 'claude', 'gemini', 'llama', 
+    models = ['gpt-4', 'gpt-5', 'gpt4', 'gpt5', 'claude', 'gemini', 'llama',
               'qwen', '千问', 'mistral', 'sora', 'midjourney', 'stable diffusion',
               '文心', '混元', '豆包', 'doubao', 'kimi', '通义']
-    if any(m in text for m in models):
+    has_model = any(m in text for m in models)
+    if has_model:
         score += 12
     
-    # === Large Funding (very important) ===
+    # === Large Funding (reduced weight to avoid outranking major model releases) ===
     import re
     # Match patterns like "100亿", "10亿美元", "$1B", "1000万"
     if re.search(r'(\d+0亿|百亿|千亿|\$\d+[bB]|十亿|融资.{0,5}\d+亿)', title):
-        score += 20
+        score += 15
     elif re.search(r'(亿美元|亿元|亿|billion|million)', text):
-        score += 10
+        score += 8
     
     # === IPO/上市/收购 (big news) ===
     if any(x in text for x in ['ipo', '上市', '收购', 'acquisition', '并购', '合并']):
         score += 15
     
     # === New Product/Model Release ===
-    if any(x in title for x in ['发布', '推出', '上线', 'release', 'launch', '开源']):
-        score += 8
+    release_keywords = ['发布', '推出', '上线', 'release', 'launch', '开源']
+    has_release = any(x in title for x in release_keywords)
+    if has_release:
+        score += 12
+
+    # === Compound bonus: Tier1 company + model name + release action ===
+    if tier1_found > 0 and has_model and has_release:
+        score += 25
     
     # === Gaming/Entertainment (priority per Kiki) ===
     if is_gaming_related(title, desc):
@@ -933,16 +940,48 @@ def fetch_rss_feed(url, source_name='RSS', max_items=20):
 
 # RSS源配置 - 使用本地 WeWe RSS 服务
 WEWE_RSS_BASE = 'http://localhost:4000/feeds'
+
+# 分类配置：已知ID的直接使用，未配置的用 PLACEHOLDER 占位
+# 用户在 WeWe RSS 后台添加订阅后，将 PLACEHOLDER_xxx 替换为真实 ID
 RSS_FEEDS = {
+    # === AI 垂直媒体 ===
     '量子位': f'{WEWE_RSS_BASE}/MP_WXS_3236757533.rss',
     '机器之心': f'{WEWE_RSS_BASE}/MP_WXS_3073282833.rss',
     '新智元': f'{WEWE_RSS_BASE}/MP_WXS_3271041950.rss',
+    '36氪AI频道': f'{WEWE_RSS_BASE}/PLACEHOLDER_36kr_ai.rss',
+    'AI科技评论': f'{WEWE_RSS_BASE}/PLACEHOLDER_ai_tech_review.rss',
+    'CSDN AI': f'{WEWE_RSS_BASE}/PLACEHOLDER_csdn_ai.rss',
+    '雷峰网': f'{WEWE_RSS_BASE}/PLACEHOLDER_leiphone.rss',
+    '极客公园': f'{WEWE_RSS_BASE}/PLACEHOLDER_geekpark.rss',
+    'AI前线': f'{WEWE_RSS_BASE}/PLACEHOLDER_ai_front.rss',
+    'InfoQ': f'{WEWE_RSS_BASE}/PLACEHOLDER_infoq.rss',
+
+    # === 大厂官方号 ===
+    'OpenAI': f'{WEWE_RSS_BASE}/PLACEHOLDER_openai.rss',
+    'Google AI': f'{WEWE_RSS_BASE}/PLACEHOLDER_google_ai.rss',
+    '百度AI': f'{WEWE_RSS_BASE}/PLACEHOLDER_baidu_ai.rss',
+    '腾讯AI Lab': f'{WEWE_RSS_BASE}/PLACEHOLDER_tencent_ai.rss',
+    '阿里达摩院': f'{WEWE_RSS_BASE}/PLACEHOLDER_damo_academy.rss',
+    '华为AI': f'{WEWE_RSS_BASE}/PLACEHOLDER_huawei_ai.rss',
+    '字节跳动技术': f'{WEWE_RSS_BASE}/PLACEHOLDER_bytedance_tech.rss',
+    '微软中国': f'{WEWE_RSS_BASE}/PLACEHOLDER_microsoft_china.rss',
+
+    # === 投资/行业号 ===
+    '甲子光年': f'{WEWE_RSS_BASE}/PLACEHOLDER_jiazi.rss',
+    '智能涌现': f'{WEWE_RSS_BASE}/PLACEHOLDER_ai_emergence.rss',
+    'AI商业评论': f'{WEWE_RSS_BASE}/PLACEHOLDER_ai_biz_review.rss',
+    '硅星人': f'{WEWE_RSS_BASE}/PLACEHOLDER_guixingren.rss',
+    '晚点LatePost': f'{WEWE_RSS_BASE}/PLACEHOLDER_latepost.rss',
+    '深响': f'{WEWE_RSS_BASE}/PLACEHOLDER_deepecho.rss',
 }
 
 def fetch_all_rss_feeds():
-    """抓取所有配置的RSS源"""
+    """抓取所有配置的RSS源，自动跳过未配置（PLACEHOLDER）的占位条目"""
     all_results = []
     for name, url in RSS_FEEDS.items():
+        # 跳过未配置的占位条目
+        if 'PLACEHOLDER_' in url:
+            continue
         print(f"Fetching RSS: {name}...")
         results = fetch_rss_feed(url, name)
         all_results.extend(results)
@@ -991,25 +1030,183 @@ def extract_event_date_from_content(text):
 def is_timely_news(news_item, max_days=14):
     """判断新闻是否有时效性（不是旧事重提）"""
     from datetime import datetime, timedelta
-    
+
+    now = datetime.now()
+
+    # 检查 date 字段（标准日期格式）
+    date_str = news_item.get('date', '')
+    if date_str and re.match(r'\d{4}-\d{2}-\d{2}', date_str):
+        try:
+            dt = datetime.strptime(date_str[:10], '%Y-%m-%d')
+            if now - dt > timedelta(days=max_days):
+                return False
+        except:
+            pass
+
     # 如果有提取到的事件日期，检查是否在时间范围内
     event_date = news_item.get('event_date')
     if event_date:
         try:
             event_dt = datetime.strptime(event_date, '%Y-%m-%d')
-            if datetime.now() - event_dt > timedelta(days=max_days):
+            if now - event_dt > timedelta(days=max_days):
                 return False
         except:
             pass
-    
+
     # 检查标题/描述中的关键词，识别回顾性文章
     text = (news_item.get('title', '') + news_item.get('description', '')).lower()
     retrospective_keywords = ['回顾', '盘点', '复盘', '去年', '历史', '曾经', '此前', '早在']
     for kw in retrospective_keywords:
         if kw in text:
             return False
-    
+
     return True
+
+def search_rss_by_keywords(keywords, days=7):
+    """本地搜索已抓取的 RSS 文章，按关键词过滤"""
+    all_articles = fetch_all_rss_feeds()
+    cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+
+    # 支持逗号或空格分隔的多关键词
+    if isinstance(keywords, str):
+        keyword_list = [k.strip().lower() for k in re.split(r'[,，\s]+', keywords) if k.strip()]
+    else:
+        keyword_list = [k.lower() for k in keywords]
+
+    matched = []
+    for article in all_articles:
+        text = (article.get('title', '') + ' ' + article.get('description', '')).lower()
+        # 任一关键词匹配即可
+        if any(kw in text for kw in keyword_list):
+            # 日期过滤
+            date_str = article.get('date', '')
+            if date_str and re.match(r'\d{4}-\d{2}-\d{2}', date_str):
+                if date_str < cutoff_date:
+                    continue
+            matched.append(article)
+
+    print(f"RSS keyword search: found {len(matched)} articles matching '{keywords}'")
+    return matched
+
+def search_wechat_via_brave(keywords, count=10):
+    """通过 Brave Search API 搜索 site:mp.weixin.qq.com 的公众号文章"""
+    api_key = os.environ.get('BRAVE_API_KEY', '')
+    if not api_key:
+        print("Brave API key not found, skipping web search")
+        return []
+
+    # 构造搜索查询，限定微信公众号
+    if isinstance(keywords, list):
+        keywords = ' '.join(keywords)
+    query = f"site:mp.weixin.qq.com {keywords}"
+
+    try:
+        url = "https://api.search.brave.com/res/v1/web/search"
+        headers = {
+            "Accept": "application/json",
+            "X-Subscription-Token": api_key
+        }
+        params = {
+            "q": query,
+            "count": count,
+            "search_lang": "zh-hans",
+            "freshness": "pw"  # past week
+        }
+
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        results = []
+
+        if response.status_code == 200:
+            data = response.json()
+            web_results = data.get('web', {}).get('results', [])
+
+            for item in web_results:
+                result_url = item.get('url', '')
+                # 只保留微信公众号文章链接
+                if 'mp.weixin.qq.com' not in result_url:
+                    continue
+
+                title = item.get('title', '')
+                description = item.get('description', '')
+
+                # 尝试提取日期
+                date_str = ''
+                page_age = item.get('page_age', '')
+                if page_age:
+                    date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', page_age)
+                    if date_match:
+                        date_str = date_match.group(0)
+
+                if not date_str:
+                    # 从描述中提取日期
+                    date_match = re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', title + description)
+                    if date_match:
+                        date_str = f"{date_match.group(1)}-{date_match.group(2).zfill(2)}-{date_match.group(3).zfill(2)}"
+
+                if not date_str:
+                    date_str = datetime.now().strftime('%Y-%m-%d')
+
+                results.append({
+                    'title': title,
+                    'description': description,
+                    'url': result_url,
+                    'source': '微信公众号',
+                    'date': date_str,
+                    'image': item.get('thumbnail', {}).get('src', '')
+                })
+
+            print(f"Brave wechat search: found {len(results)} articles for '{keywords}'")
+        else:
+            print(f"Brave search failed: HTTP {response.status_code}")
+
+        return results
+    except Exception as e:
+        print(f"Brave wechat search error: {e}")
+        return []
+
+def search_wechat_articles(keywords, days=7):
+    """组合搜索：本地RSS + Brave网页搜索，去重后走正常分类/评分流程"""
+    all_results = []
+
+    # 1. 本地 RSS 关键词搜索
+    rss_results = search_rss_by_keywords(keywords, days=days)
+    all_results.extend(rss_results)
+
+    # 2. Brave 网页搜索微信公众号
+    brave_results = search_wechat_via_brave(keywords, count=15)
+    all_results.extend(brave_results)
+
+    # 去重（按URL和标题前30字符）
+    seen_urls = set()
+    seen_titles = set()
+    unique_results = []
+    for item in all_results:
+        url = item.get('url', '')
+        title = item.get('title', '')[:30]
+
+        if url and url in seen_urls:
+            continue
+        if title and title in seen_titles:
+            continue
+
+        if url:
+            seen_urls.add(url)
+        if title:
+            seen_titles.add(title)
+
+        # 走正常的分类/评分流程
+        item['category'] = categorize_news(item.get('title', ''), item.get('description', ''))
+        item['gaming_related'] = is_gaming_related(item.get('title', ''), item.get('description', ''))
+        item['importance'] = calculate_importance(item)
+        item['search_result'] = True  # 标记为搜索结果
+
+        unique_results.append(item)
+
+    # 按重要性排序
+    unique_results.sort(key=lambda x: x.get('importance', 0), reverse=True)
+
+    print(f"Keyword search total: {len(unique_results)} unique articles for '{keywords}'")
+    return unique_results
 
 def get_ai_news(days=7):
     """Get AI news from Chinese sources - fetch more pages for longer time ranges"""
@@ -1080,8 +1277,8 @@ def get_ai_news(days=7):
         if event_date:
             item['event_date'] = event_date
         
-        # 过滤掉旧事重提的文章
-        if not is_timely_news(item, max_days=days + 7):
+        # 过滤掉旧事重提的文章（用精确的天数范围，不额外宽限）
+        if not is_timely_news(item, max_days=days):
             continue
             
         unique_news.append(item)
@@ -1095,8 +1292,25 @@ def get_ai_news(days=7):
     # Fetch precise dates and images for top news items
     top_news = unique_news[:50]
     top_news = enrich_news_with_dates(top_news, max_fetch=30)
+
+    # === Filter by date range (strict) ===
+    cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    filtered_news = []
+    for item in top_news:
+        date = item.get('date', '')
+        if date and re.match(r'\d{4}-\d{2}-\d{2}', date):
+            # Has a proper date - strictly filter
+            if date >= cutoff_date:
+                filtered_news.append(item)
+            else:
+                print(f"  Filtered out (too old: {date}): {item.get('title', '')[:40]}...")
+        else:
+            # No proper date - keep it (likely recent, will be enriched later)
+            filtered_news.append(item)
+    top_news = filtered_news
+
     top_news = enrich_news_with_images(top_news, max_fetch=20)
-    
+
     return top_news
 
 def format_news_for_display(news_list):
@@ -1149,12 +1363,13 @@ def format_news_for_display(news_list):
                     except:
                         continue
         
-        # If still no date, use today
+        # If still no date, mark as unknown (don't fake today's date)
         if not dt:
-            dt = datetime.now()
-        
-        item['date_display'] = dt.strftime('%m月%d日')
-        item['date_full'] = dt.strftime('%Y年%m月%d日')
+            item['date_display'] = '日期未知'
+            item['date_full'] = ''
+        else:
+            item['date_display'] = dt.strftime('%m月%d日')
+            item['date_full'] = dt.strftime('%Y年%m月%d日')
     
     return news_list
 

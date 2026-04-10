@@ -214,6 +214,17 @@
             font-size: 0.65em;
             color: white;
         }
+
+        .news-item .search-tag {
+            position: absolute;
+            top: 8px;
+            left: 38px;
+            background: #e17055;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.65em;
+            color: white;
+        }
         
         .news-item .title {
             font-weight: bold;
@@ -454,11 +465,20 @@
             
             <button onclick="searchNews()">🔍 获取新闻</button>
             <button class="btn-generate" onclick="generatePPT()" id="generateBtn" disabled>📊 生成 PPT</button>
-            
+
             <div class="stats">
                 <span>📰 备选: <strong id="totalCount">0</strong></span>
                 <span>✅ 已选: <strong id="selectedCount">0</strong>/10</span>
             </div>
+        </div>
+
+        <!-- 关键词搜索区域 -->
+        <div class="controls" style="margin-top: -10px;">
+            <div class="control-group" style="flex: 1;">
+                <label>🔍 关键词搜索公众号文章</label>
+                <input type="text" id="keywordInput" placeholder="输入关键词，如：GPT-5, 大模型, Sora（逗号或空格分隔）" style="width: 100%;">
+            </div>
+            <button onclick="keywordSearch()" id="keywordSearchBtn" style="background: linear-gradient(90deg, #6c5ce7, #a29bfe);">🔍 搜索文章</button>
         </div>
         
         <div class="categories" id="newsContainer">
@@ -584,6 +604,7 @@
                             <div class="news-item" data-category="${cat}" data-index="${idx}" onclick="toggleSelect(this, '${cat}', ${idx})">
                                 <span class="date-badge">${item.date_display || item.date || '近期'}</span>
                                 <span class="importance-badge ${getImportanceClass(item.importance)}">${item.importance}</span>
+                                ${item.search_result ? '<span class="search-tag">🔍 搜索</span>' : ''}
                                 ${item.gaming_related ? '<span class="gaming-tag">🎮 游戏</span>' : ''}
                                 <div class="title">${escapeHtml(item.title)}</div>
                                 <div class="desc">${escapeHtml(item.description)}</div>
@@ -798,9 +819,9 @@
         function renderCategoryNews(category) {
             const list = document.getElementById(`${category}-list`);
             const items = allNews.filter(n => n.category === category);
-            
+
             document.getElementById(`${category}-count`).textContent = `(${items.length})`;
-            
+
             if (items.length === 0) {
                 list.innerHTML = '<div class="empty">暂无相关新闻</div>';
             } else {
@@ -810,6 +831,7 @@
                         <div class="news-item ${isSelected ? 'selected' : ''} ${item.custom ? 'custom' : ''}" data-category="${category}" data-index="${idx}" onclick="toggleSelect(this, '${category}', ${idx})">
                             <span class="date-badge">${item.date_display || item.date || '近期'}</span>
                             ${item.custom ? '<span class="custom-tag">✋ 手动</span>' : `<span class="importance-badge ${getImportanceClass(item.importance)}">${item.importance}</span>`}
+                            ${item.search_result ? '<span class="search-tag">🔍 搜索</span>' : ''}
                             ${item.gaming_related ? '<span class="gaming-tag">🎮 游戏</span>' : ''}
                             <div class="title">${escapeHtml(item.title)}</div>
                             <div class="desc">${escapeHtml(item.description || '')}</div>
@@ -819,6 +841,65 @@
                         </div>
                     `;
                 }).join('');
+            }
+        }
+
+        async function keywordSearch() {
+            const keywords = document.getElementById('keywordInput').value.trim();
+            if (!keywords) {
+                showStatus('请输入搜索关键词', 'error');
+                return;
+            }
+
+            const days = parseInt(document.getElementById('dateRange').value);
+            const btn = document.getElementById('keywordSearchBtn');
+            btn.disabled = true;
+            btn.textContent = '🔍 搜索中...';
+
+            try {
+                const response = await fetch('/api/keyword-search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keywords: keywords, days: days })
+                });
+
+                const data = await response.json();
+
+                if (!data.success) {
+                    throw new Error(data.error || '搜索失败');
+                }
+
+                const searchResults = data.news || [];
+
+                // 合并搜索结果到 allNews，去重
+                let addedCount = 0;
+                for (const item of searchResults) {
+                    item.search_result = true;
+                    const exists = allNews.some(n =>
+                        (n.url && n.url === item.url) ||
+                        (n.title && n.title.substring(0, 30) === item.title.substring(0, 30))
+                    );
+                    if (!exists) {
+                        allNews.push(item);
+                        addedCount++;
+                    }
+                }
+
+                // 更新总数
+                document.getElementById('totalCount').textContent = allNews.length;
+
+                // 重新渲染所有分类
+                ['model', 'application', 'investment'].forEach(cat => {
+                    renderCategoryNews(cat);
+                });
+
+                showStatus(`搜索完成：找到 ${searchResults.length} 条结果，新增 ${addedCount} 条`, 'success');
+
+            } catch (error) {
+                showStatus('搜索失败: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔍 搜索文章';
             }
         }
     </script>
