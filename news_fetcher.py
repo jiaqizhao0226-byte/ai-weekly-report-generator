@@ -1110,7 +1110,8 @@ def search_wechat_via_brave(keywords, count=10):
             "q": query,
             "count": count,
             "search_lang": "zh-hans",
-            "freshness": "pw"  # past week
+            # 注意：不使用 freshness 过滤，因为 Brave 对微信文章的时间索引不准确
+            # 时效性过滤改由后续日期检查完成
         }
 
         response = requests.get(url, headers=headers, params=params, timeout=15)
