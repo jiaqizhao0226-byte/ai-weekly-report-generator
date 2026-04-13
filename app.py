@@ -288,7 +288,7 @@ def fill_slide(slide, news_list):
 
 def generate_ppt(selected_news, output_path, date_range):
     """Generate PPT with multi-page template (17 slides)"""
-    template_path = os.path.join(os.path.dirname(__file__), 'AI_template_new.pptx')
+    template_path = os.path.join(os.path.dirname(__file__), 'AI_template.pptx')
     prs = Presentation(template_path)
     
     # Update cover date (slide 0)
