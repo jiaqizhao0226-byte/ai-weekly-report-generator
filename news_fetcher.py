@@ -1031,7 +1031,7 @@ def fetch_all_rss_feeds():
     fetched_ids = set()
 
     # 排除的公众号（内容不相关或质量不高）
-    excluded_names = {'APPSO'}
+    excluded_names = set()
 
     # 1. 先尝试从 WeWe RSS 自动获取所有已订阅公众号
     try:
