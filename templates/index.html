@@ -547,7 +547,7 @@
     
     <script>
         let allNews = [];
-        let searchNews = [];
+        let keywordResults = [];
         let selectedNews = [];
         
         // Set default report date
@@ -688,7 +688,7 @@
                 const searchIdx = el.dataset.searchIndex;
                 if (searchIdx !== undefined) {
                     // Search result item
-                    const item = searchNews[parseInt(searchIdx)];
+                    const item = keywordResults[parseInt(searchIdx)];
                     if (item && ((item.url && item.url === news.url) || item.title === news.title)) {
                         el.classList.remove('selected');
                     }
@@ -891,13 +891,13 @@
                     throw new Error(data.error || '搜索失败');
                 }
 
-                searchNews = data.news || [];
-                document.getElementById('search-count').textContent = `(${searchNews.length})`;
+                keywordResults = data.news || [];
+                document.getElementById('search-count').textContent = `(${keywordResults.length})`;
 
-                if (searchNews.length === 0) {
+                if (keywordResults.length === 0) {
                     list.innerHTML = '<div class="empty">未找到相关文章</div>';
                 } else {
-                    list.innerHTML = searchNews.map((item, idx) => {
+                    list.innerHTML = keywordResults.map((item, idx) => {
                         const isSelected = selectedNews.some(n => n.url === item.url && n.title === item.title);
                         return `
                             <div class="news-item ${isSelected ? 'selected' : ''}" data-search-index="${idx}" onclick="toggleSelectSearch(this, ${idx})">
@@ -914,7 +914,7 @@
                     }).join('');
                 }
 
-                showStatus(`搜索完成：找到 ${searchNews.length} 条结果`, 'success');
+                showStatus(`搜索完成：找到 ${keywordResults.length} 条结果`, 'success');
 
             } catch (error) {
                 list.innerHTML = '<div class="empty">搜索失败，请重试</div>';
@@ -926,7 +926,7 @@
         }
 
         function toggleSelectSearch(element, index) {
-            const news = searchNews[index];
+            const news = keywordResults[index];
             if (!news) return;
             news.search_result = true;
             const existingIndex = selectedNews.findIndex(n => (n.url && n.url === news.url) || n.title === news.title);
