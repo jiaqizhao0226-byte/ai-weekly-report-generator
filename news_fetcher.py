@@ -445,80 +445,102 @@ GAMING_KEYWORDS = [
 ]
 
 def categorize_news(title, description):
-    """Categorize news into model/application/investment (company dynamics)
-    
-    Categories:
-    - model: 底层模型动态（模型发布、性能、开源等）
-    - application: 应用动态（基于模型的产品和应用）  
-    - investment: 厂商&投融资（人员变动、公司动态、融资）
-    """
+    """Fallback: simple keyword-based categorization (used when AI API unavailable)"""
     text = (title + ' ' + description).lower()
-    
-    # === FIRST: Check for clear APP indicators (override model names) ===
-    app_strong_keywords = ['app store', 'app下载', '下载量', '用户数', '月活', 'dau',
-                          '登顶', '榜首', '免单', '红包', '补贴', 'app', '客户端']
-    is_app_news = any(k in text for k in app_strong_keywords)
-
-    # === SECOND: Check for clear COMPANY indicators ===
-    company_strong = ['跳槽', '加盟', '离职', '入职', '挖人', '裁员', '招聘',
-                     '融资', 'ipo', '上市', '估值', '亿美元', '亿元', '投资']
-    is_company_news = any(k in text for k in company_strong)
-
-    # === THIRD: Check for clear MODEL indicators ===
-    model_strong = ['模型', '开源', '屠榜', '超越', 'benchmark',
-                    '基准', '参数', '训练', '架构', '多模态', 'token', '权重',
-                    '推理', 'sota', '刷新', '最强', '大模型', 'llm']
-    has_model_name = any(name in text for name in MODEL_NAMES)
-    has_model_context = any(k in text for k in model_strong)
-    is_model_news = has_model_name or has_model_context
-
-    # === Priority: model > company > app ===
-    # 当模型关键词和公司关键词同时出现时，优先归类为模型动态
-    if is_model_news and not is_app_news:
-        return 'model'
-
-    # === If clear APP news, return application ===
-    if is_app_news and not is_company_news:
-        return 'application'
-
-    # === If clear COMPANY news, return investment ===
-    if is_company_news:
+    if any(k in text for k in ['融资', '投资', '上市', 'ipo', '估值', '亿元', '亿美元', '领投', '离职', '加盟', '裁员', '招聘']):
         return 'investment'
-    
-    # === Otherwise, score-based categorization ===
-    # Model: check for model names + model-specific context
-    model_score = 0
-    has_model_name = any(name in text for name in MODEL_NAMES)
-    
-    if has_model_name:
-        # Model name alone is not enough - need model-specific context
-        model_context = ['发布', '开源', '升级', '参数', '性能', '基准', 'benchmark',
-                        '训练', '架构', '多模态', 'token', '上下文', '权重']
-        if any(k in text for k in model_context):
-            model_score = 20
-        else:
-            model_score = 5  # Low score if no model context
-    
-    model_score += sum(3 if k in text else 0 for k in MODEL_KEYWORDS)
-    
-    # Application score
-    app_score = sum(4 if k in text else 0 for k in APP_KEYWORDS)
-    
-    # Company score (lower priority here since strong cases handled above)
-    company_score = sum(3 if k in text else 0 for k in COMPANY_KEYWORDS)
-    
-    # Determine category
-    max_score = max(model_score, app_score, company_score)
-    
-    if max_score == 0:
-        return 'application'  # default
-    
-    if model_score == max_score:
+    if any(k in text for k in ['开源', '屠榜', '参数', '训练', '基准', 'benchmark', '大模型', 'llm', '权重', '推理']):
         return 'model'
-    elif company_score > app_score:
-        return 'investment'
-    else:
-        return 'application'
+    if any(name in text for name in MODEL_NAMES):
+        return 'model'
+    return 'application'
+
+def ai_categorize_batch(news_list):
+    """Use Qwen API to batch categorize news and filter out irrelevant content.
+
+    Returns the news_list with updated 'category' field.
+    Items marked as 'skip' are filtered out (ads, recruitment, irrelevant).
+    """
+    if not news_list:
+        return news_list
+
+    api_key = os.environ.get('QWEN_API_KEY', '')
+    if not api_key:
+        print("Qwen API key not found, using keyword-based categorization")
+        for item in news_list:
+            item['category'] = categorize_news(item.get('title', ''), item.get('description', ''))
+        return news_list
+
+    # 构造批量分类 prompt，每批最多40条避免超长
+    batch_size = 40
+    for batch_start in range(0, len(news_list), batch_size):
+        batch = news_list[batch_start:batch_start + batch_size]
+
+        lines = []
+        for i, item in enumerate(batch):
+            title = item.get('title', '')
+            desc = item.get('description', '')[:100]
+            lines.append(f"{i}|{title}|{desc}")
+
+        prompt = f"""你是AI行业新闻分类助手。请对以下新闻逐条分类。
+
+分类规则：
+- model: 模型动态（模型发布/更新/开源/评测/性能对比/技术突破）
+- application: 应用动态（AI产品/应用/功能上线/用户数据/商业落地）
+- investment: 厂商&投融资（融资/收购/上市/人事变动/公司战略/组织调整）
+- skip: 应跳过的内容（招聘广告/编辑招募/营销软文/榜单征集/课程推广/与AI无关的内容）
+
+每行格式: 序号|标题|摘要
+请只回复每行一个: 序号|分类
+不要输出任何其他内容。
+
+{chr(10).join(lines)}"""
+
+        try:
+            resp = requests.post(
+                'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+                headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                json={
+                    'model': 'qwen-turbo',
+                    'messages': [{'role': 'user', 'content': prompt}],
+                    'max_tokens': 1000,
+                    'temperature': 0.1
+                },
+                timeout=30
+            )
+
+            if resp.status_code == 200:
+                content = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+                # 解析结果
+                for line in content.strip().split('\n'):
+                    line = line.strip()
+                    if '|' in line:
+                        parts = line.split('|', 1)
+                        try:
+                            idx = int(parts[0].strip())
+                            cat = parts[1].strip().lower()
+                            if 0 <= idx < len(batch) and cat in ('model', 'application', 'investment', 'skip'):
+                                batch[idx]['category'] = cat
+                        except (ValueError, IndexError):
+                            continue
+            else:
+                print(f"Qwen API error: HTTP {resp.status_code}")
+        except Exception as e:
+            print(f"Qwen categorize error: {e}")
+
+        # Fallback: 未被AI分类的用关键词分类
+        for item in batch:
+            if 'category' not in item or item['category'] not in ('model', 'application', 'investment', 'skip'):
+                item['category'] = categorize_news(item.get('title', ''), item.get('description', ''))
+
+    # 过滤掉 skip 的垃圾内容
+    before = len(news_list)
+    news_list = [item for item in news_list if item.get('category') != 'skip']
+    skipped = before - len(news_list)
+    if skipped > 0:
+        print(f"  AI filtered out {skipped} irrelevant articles (ads/recruitment/etc)")
+
+    return news_list
 
 def is_gaming_related(title, description):
     """Check if news is gaming/entertainment related"""
@@ -1243,13 +1265,15 @@ def search_wechat_articles(keywords, days=7):
         if title:
             seen_titles.add(title)
 
-        # 走正常的分类/评分流程
-        item['category'] = categorize_news(item.get('title', ''), item.get('description', ''))
+        # 走正常的评分流程（分类由AI批量处理）
         item['gaming_related'] = is_gaming_related(item.get('title', ''), item.get('description', ''))
         item['importance'] = calculate_importance(item)
         item['search_result'] = True  # 标记为搜索结果
 
         unique_results.append(item)
+
+    # AI批量分类
+    unique_results = ai_categorize_batch(unique_results)
 
     # 按重要性排序
     unique_results.sort(key=lambda x: x.get('importance', 0), reverse=True)
@@ -1289,7 +1313,6 @@ def get_ai_news(days=7):
         if title:
             seen_titles.add(title)
 
-        item['category'] = categorize_news(item.get('title', ''), item.get('description', ''))
         item['gaming_related'] = is_gaming_related(item.get('title', ''), item.get('description', ''))
         item['importance'] = calculate_importance(item)
 
@@ -1304,6 +1327,10 @@ def get_ai_news(days=7):
             continue
 
         unique_news.append(item)
+
+    # 用千问AI批量分类 + 过滤垃圾内容
+    print("AI categorizing articles...")
+    unique_news = ai_categorize_batch(unique_news)
 
     # Sort by importance
     unique_news.sort(key=lambda x: x.get('importance', 0), reverse=True)
