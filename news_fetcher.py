@@ -455,19 +455,32 @@ def categorize_news(title, description):
     text = (title + ' ' + description).lower()
     
     # === FIRST: Check for clear APP indicators (override model names) ===
-    app_strong_keywords = ['app store', 'app下载', '下载量', '用户数', '月活', 'dau', 
+    app_strong_keywords = ['app store', 'app下载', '下载量', '用户数', '月活', 'dau',
                           '登顶', '榜首', '免单', '红包', '补贴', 'app', '客户端']
     is_app_news = any(k in text for k in app_strong_keywords)
-    
+
     # === SECOND: Check for clear COMPANY indicators ===
     company_strong = ['跳槽', '加盟', '离职', '入职', '挖人', '裁员', '招聘',
                      '融资', 'ipo', '上市', '估值', '亿美元', '亿元', '投资']
     is_company_news = any(k in text for k in company_strong)
-    
+
+    # === THIRD: Check for clear MODEL indicators ===
+    model_strong = ['模型', '开源', '屠榜', '超越', 'benchmark',
+                    '基准', '参数', '训练', '架构', '多模态', 'token', '权重',
+                    '推理', 'sota', '刷新', '最强', '大模型', 'llm']
+    has_model_name = any(name in text for name in MODEL_NAMES)
+    has_model_context = any(k in text for k in model_strong)
+    is_model_news = has_model_name or has_model_context
+
+    # === Priority: model > company > app ===
+    # 当模型关键词和公司关键词同时出现时，优先归类为模型动态
+    if is_model_news and not is_app_news:
+        return 'model'
+
     # === If clear APP news, return application ===
     if is_app_news and not is_company_news:
         return 'application'
-    
+
     # === If clear COMPANY news, return investment ===
     if is_company_news:
         return 'investment'
@@ -980,6 +993,9 @@ def fetch_all_rss_feeds():
     all_results = []
     fetched_ids = set()
 
+    # 排除的公众号（内容不相关或质量不高）
+    excluded_names = {'APPSO'}
+
     # 1. 先尝试从 WeWe RSS 自动获取所有已订阅公众号
     try:
         resp = requests.get(f'{WEWE_RSS_BASE}/../feeds/', timeout=5)
@@ -989,6 +1005,9 @@ def fetch_all_rss_feeds():
             for feed in feeds_data:
                 feed_id = feed.get('id', '')
                 name = feed.get('name', feed_id)
+                if name in excluded_names:
+                    print(f"Skipping excluded: {name}")
+                    continue
                 if feed_id:
                     url = f'{WEWE_RSS_BASE}/{feed_id}.rss?limit=100'
                     print(f"Fetching RSS: {name}...")
