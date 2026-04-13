@@ -1318,15 +1318,11 @@ def get_ai_news(days=7):
     
     # Deduplicate similar news (merge articles about same event)
     unique_news = deduplicate_similar_news(unique_news)
-    
-    # Fetch precise dates and images for top news items
-    top_news = unique_news[:50]
-    top_news = enrich_news_with_dates(top_news, max_fetch=30)
 
     # === Filter by date range (strict) ===
     cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
     filtered_news = []
-    for item in top_news:
+    for item in unique_news:
         date = item.get('date', '')
         if date and re.match(r'\d{4}-\d{2}-\d{2}', date):
             # Has a proper date - strictly filter
@@ -1337,7 +1333,20 @@ def get_ai_news(days=7):
         else:
             # No proper date - keep it (likely recent, will be enriched later)
             filtered_news.append(item)
-    top_news = filtered_news
+
+    # 限制每个来源最多占比，确保信源多样性
+    source_count = {}
+    max_per_source = max(15, len(filtered_news) // 4)  # 每个来源最多占1/4
+    diverse_news = []
+    for item in filtered_news:
+        src = item.get('source', '')
+        source_count[src] = source_count.get(src, 0) + 1
+        if source_count[src] <= max_per_source:
+            diverse_news.append(item)
+
+    # Fetch precise dates and images for top items
+    top_news = diverse_news[:80]
+    top_news = enrich_news_with_dates(top_news, max_fetch=30)
 
     top_news = enrich_news_with_images(top_news, max_fetch=20)
 
