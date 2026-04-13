@@ -606,8 +606,14 @@ def calculate_importance(news_item):
         score += 12
 
     # === Compound bonus: Tier1 company + model name + release action ===
+    # 要求发布动作和模型名在标题中紧密关联（如"发布GPT-5"、"开源Llama"）
+    # 排除仅用于对比的情况（如"比肩GPT/Claude"）
     if tier1_found > 0 and has_model and has_release:
-        score += 25
+        # 检查模型名是否在"比肩/超越/对标/媲美/不如"等对比语境中
+        compare_patterns = ['比肩', '超越', '对标', '媲美', '不如', '性能比', '力压', '碾压', '吊打']
+        is_comparison_only = any(cp in title for cp in compare_patterns)
+        if not is_comparison_only:
+            score += 25
     
     # === Gaming/Entertainment (priority per Kiki) ===
     if is_gaming_related(title, desc):
