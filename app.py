@@ -286,16 +286,37 @@ def fill_slide(slide, news_list):
             if i < len(image_shapes):
                 image_shapes[i].text_frame.clear()
 
+def duplicate_slide(prs, template_idx):
+    """Duplicate a slide and append it after the template slide, return the new slide"""
+    from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+    from copy import deepcopy
+    from lxml import etree
+
+    template = prs.slides[template_idx]
+    slide_layout = template.slide_layout
+
+    # Add a new blank slide with same layout
+    new_slide = prs.slides.add_slide(slide_layout)
+
+    # Copy all shapes from template to new slide
+    for shape in template.shapes:
+        el = deepcopy(shape._element)
+        new_slide.shapes._spTree.append(el)
+
+    # Remove default empty shapes that came with the layout
+    # (keep only the ones we copied)
+    return new_slide
+
 def generate_ppt(selected_news, output_path, date_range):
-    """Generate PPT with multi-page template (17 slides)"""
+    """Generate PPT with 5-slide template, duplicating category slides as needed"""
     template_path = os.path.join(os.path.dirname(__file__), 'AI_template.pptx')
     prs = Presentation(template_path)
-    
+
     # Update cover date (slide 0)
     for shape in prs.slides[0].shapes:
         if shape.has_text_frame:
             text = shape.text_frame.text
-            if '202X年X月' in text:
+            if '2023年' in text or '光子' in text:
                 shape.text_frame.clear()
                 p = shape.text_frame.paragraphs[0]
                 run = p.add_run()
@@ -303,43 +324,25 @@ def generate_ppt(selected_news, output_path, date_range):
                 run.font.size = Pt(14)
                 run.font.name = '华文楷体'
                 run.font.color.rgb = RGBColor(255, 255, 255)
-    
+
     # Group by category
     news_by_cat = {'model': [], 'application': [], 'investment': []}
     for news in selected_news:
         cat = news.get('category', 'application')
         if cat in news_by_cat:
             news_by_cat[cat].append(news)
-    
-    # Category slide structure:
-    # - Slides 1-4: double-item (2 news each), Slide 5: single-item (1 news)
-    # - Slides 6-9: double-item, Slide 10: single-item
-    # - Slides 11-14: double-item, Slide 15: single-item
-    # For odd news count, last item goes on single-item slide
-    cat_config = {
-        'model': {'double_start': 1, 'double_count': 4, 'single_idx': 5},
-        'application': {'double_start': 6, 'double_count': 4, 'single_idx': 10},
-        'investment': {'double_start': 11, 'double_count': 4, 'single_idx': 15}
-    }
-    
-    # Track slides to delete (will delete in reverse order later)
-    slides_to_delete = []
-    
-    # Process each category
+
+    # Template slides: 1=model, 2=application, 3=investment (each holds 2 news)
+    cat_slide_idx = {'model': 1, 'application': 2, 'investment': 3}
+
+    # Fill template slides first (first 2 news per category)
     for category in ['model', 'application', 'investment']:
+        slide_idx = cat_slide_idx[category]
         cat_news = news_by_cat[category]
-        config = cat_config[category]
-        double_start = config['double_start']
-        double_count = config['double_count']
-        single_idx = config['single_idx']
-        
-        n = len(cat_news)
-        pairs_needed = n // 2  # Number of double-item slides needed
-        has_single = n % 2 == 1  # Whether we need single-item slide
-        
-        if n == 0:
-            # No news - show placeholder on first double slide, delete rest
-            slide = prs.slides[double_start]
+
+        if not cat_news:
+            # No news placeholder
+            slide = prs.slides[slide_idx]
             for shape in slide.shapes:
                 if shape.has_text_frame:
                     text = shape.text_frame.text
@@ -353,35 +356,31 @@ def generate_ppt(selected_news, output_path, date_range):
                         run.font.color.rgb = RGBColor(128, 128, 128)
                     elif '对应图片' in text:
                         shape.text_frame.clear()
-            # Delete slides 2-4 and single slide
-            for i in range(1, double_count):
-                slides_to_delete.append(double_start + i)
-            slides_to_delete.append(single_idx)
         else:
-            # Fill double-item slides
-            for i in range(pairs_needed):
-                slide_idx = double_start + i
-                news_start = i * 2
-                slide_news = cat_news[news_start:news_start + 2]
-                fill_slide(prs.slides[slide_idx], slide_news)
-            
-            # Delete unused double-item slides
-            for i in range(pairs_needed, double_count):
-                slides_to_delete.append(double_start + i)
-            
-            # Handle single-item slide
-            if has_single:
-                # Fill single-item slide with last news
-                last_news = cat_news[-1]
-                fill_slide(prs.slides[single_idx], [last_news])
-            else:
-                # Delete single-item slide
-                slides_to_delete.append(single_idx)
-    
-    # Delete unused slides in reverse order (to maintain indices)
-    for idx in sorted(slides_to_delete, reverse=True):
-        delete_slide(prs, idx)
-    
+            # Fill first slide with first 2 news
+            fill_slide(prs.slides[slide_idx], cat_news[:2])
+
+    # For categories with >2 news, duplicate slides and fill
+    # Process in reverse order so slide indices don't shift for earlier categories
+    for category in reversed(['model', 'application', 'investment']):
+        cat_news = news_by_cat[category]
+        if len(cat_news) <= 2:
+            continue
+
+        base_idx = cat_slide_idx[category]
+        # Split remaining news into pairs
+        remaining = cat_news[2:]
+        for i in range(0, len(remaining), 2):
+            pair = remaining[i:i+2]
+            new_slide = duplicate_slide(prs, base_idx)
+            # Update the title to keep category header
+            for shape in new_slide.shapes:
+                if shape.has_text_frame:
+                    text = shape.text_frame.text
+                    if '新闻标题' in text or '对应图片' in text:
+                        continue  # will be filled by fill_slide
+            fill_slide(new_slide, pair)
+
     prs.save(output_path)
     return output_path
 
