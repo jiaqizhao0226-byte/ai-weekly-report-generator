@@ -302,6 +302,7 @@
         .selected-tag.model { border-color: #00d9ff; background: rgba(0,217,255,0.2); }
         .selected-tag.application { border-color: #00ff88; background: rgba(0,255,136,0.2); }
         .selected-tag.investment { border-color: #feca57; background: rgba(254,202,87,0.2); }
+        .selected-tag.search { border-color: #e17055; background: rgba(225,112,85,0.2); }
         
         .selected-tag .remove {
             cursor: pointer;
@@ -472,15 +473,6 @@
             </div>
         </div>
 
-        <!-- 关键词搜索区域 -->
-        <div class="controls" style="margin-top: -10px;">
-            <div class="control-group" style="flex: 1;">
-                <label>🔍 关键词搜索公众号文章</label>
-                <input type="text" id="keywordInput" placeholder="输入关键词，如：GPT-5, 大模型, Sora（逗号或空格分隔）" style="width: 100%;">
-            </div>
-            <button onclick="keywordSearch()" id="keywordSearchBtn" style="background: linear-gradient(90deg, #6c5ce7, #a29bfe);">🔍 搜索文章</button>
-        </div>
-        
         <div class="categories" id="newsContainer">
             <div class="category model">
                 <h2>🧠 模型动态 <span class="count" id="model-count">(0)</span></h2>
@@ -515,7 +507,22 @@
                 </div>
             </div>
         </div>
-        
+
+        <!-- 关键词搜索独立区域 -->
+        <div class="category" id="searchSection" style="margin-bottom: 20px; border: 1px solid rgba(225,112,85,0.3);">
+            <h2 style="border-color: #e17055; color: #e17055;">
+                🔍 关键词搜索
+                <span class="count" id="search-count">(0)</span>
+            </h2>
+            <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+                <input type="text" id="keywordInput" placeholder="输入关键词，如：GPT-5, 大模型, Sora（逗号或空格分隔）" style="flex: 1; min-width: 0;">
+                <button onclick="keywordSearch()" id="keywordSearchBtn" style="background: linear-gradient(90deg, #e17055, #f0936b); white-space: nowrap;">🔍 搜索</button>
+            </div>
+            <div class="news-list" id="search-list" style="max-height: 400px;">
+                <div class="empty">输入关键词搜索公众号文章</div>
+            </div>
+        </div>
+
         <div class="selected-panel">
             <h3>
                 ✅ 已选新闻 
@@ -540,6 +547,7 @@
     
     <script>
         let allNews = [];
+        let searchNews = [];
         let selectedNews = [];
         
         // Set default report date
@@ -655,9 +663,11 @@
                 
                 container.innerHTML = sorted.map((news, idx) => {
                     const originalIdx = selectedNews.findIndex(n => n.url === news.url);
+                    const tagClass = news.search_result ? 'search' : news.category;
+                    const emoji = news.search_result ? '🔍' : getCategoryEmoji(news.category);
                     return `
-                        <div class="selected-tag ${news.category}">
-                            <span>${getCategoryEmoji(news.category)} ${truncate(news.title, 25)}</span>
+                        <div class="selected-tag ${tagClass}">
+                            <span>${emoji} ${truncate(news.title, 25)}</span>
                             <span class="remove" onclick="removeSelected(${originalIdx}); event.stopPropagation();">✕</span>
                         </div>
                     `;
@@ -671,22 +681,31 @@
         function removeSelected(index) {
             const news = selectedNews[index];
             selectedNews.splice(index, 1);
-            
-            // Update UI
+
+            // Update UI - main categories
             document.querySelectorAll('.news-item.selected').forEach(el => {
                 const cat = el.dataset.category;
-                const idx = parseInt(el.dataset.index);
-                const item = allNews.filter(n => n.category === cat)[idx];
-                if (item && item.url === news.url) {
-                    el.classList.remove('selected');
+                const searchIdx = el.dataset.searchIndex;
+                if (searchIdx !== undefined) {
+                    // Search result item
+                    const item = searchNews[parseInt(searchIdx)];
+                    if (item && ((item.url && item.url === news.url) || item.title === news.title)) {
+                        el.classList.remove('selected');
+                    }
+                } else if (cat) {
+                    const idx = parseInt(el.dataset.index);
+                    const item = allNews.filter(n => n.category === cat)[idx];
+                    if (item && item.url === news.url) {
+                        el.classList.remove('selected');
+                    }
                 }
             });
-            
+
             updateSelectedPanel();
         }
         
         function getCategoryEmoji(cat) {
-            const emojis = { model: '🧠', application: '📱', investment: '💰' };
+            const emojis = { model: '🧠', application: '📱', investment: '💰', search: '🔍' };
             return emojis[cat] || '📰';
         }
         
@@ -854,7 +873,10 @@
             const days = parseInt(document.getElementById('dateRange').value);
             const btn = document.getElementById('keywordSearchBtn');
             btn.disabled = true;
-            btn.textContent = '🔍 搜索中...';
+            btn.textContent = '搜索中...';
+
+            const list = document.getElementById('search-list');
+            list.innerHTML = `<div class="loading"><div class="spinner"></div><p>搜索中...</p></div>`;
 
             try {
                 const response = await fetch('/api/keyword-search', {
@@ -869,38 +891,55 @@
                     throw new Error(data.error || '搜索失败');
                 }
 
-                const searchResults = data.news || [];
+                searchNews = data.news || [];
+                document.getElementById('search-count').textContent = `(${searchNews.length})`;
 
-                // 合并搜索结果到 allNews，去重
-                let addedCount = 0;
-                for (const item of searchResults) {
-                    item.search_result = true;
-                    const exists = allNews.some(n =>
-                        (n.url && n.url === item.url) ||
-                        (n.title && n.title.substring(0, 30) === item.title.substring(0, 30))
-                    );
-                    if (!exists) {
-                        allNews.push(item);
-                        addedCount++;
-                    }
+                if (searchNews.length === 0) {
+                    list.innerHTML = '<div class="empty">未找到相关文章</div>';
+                } else {
+                    list.innerHTML = searchNews.map((item, idx) => {
+                        const isSelected = selectedNews.some(n => n.url === item.url && n.title === item.title);
+                        return `
+                            <div class="news-item ${isSelected ? 'selected' : ''}" data-search-index="${idx}" onclick="toggleSelectSearch(this, ${idx})">
+                                <span class="date-badge">${item.date_display || item.date || '近期'}</span>
+                                <span class="importance-badge ${getImportanceClass(item.importance)}">${item.importance}</span>
+                                <span class="search-tag">🔍 搜索</span>
+                                <div class="title">${escapeHtml(item.title)}</div>
+                                <div class="desc">${escapeHtml(item.description || '')}</div>
+                                <div class="meta">
+                                    <span class="source-link">📎 ${item.url ? `<a href="${item.url}" target="_blank" onclick="event.stopPropagation()">${item.source || 'Unknown'}</a>` : (item.source || '搜索')}</span>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
                 }
 
-                // 更新总数
-                document.getElementById('totalCount').textContent = allNews.length;
-
-                // 重新渲染所有分类
-                ['model', 'application', 'investment'].forEach(cat => {
-                    renderCategoryNews(cat);
-                });
-
-                showStatus(`搜索完成：找到 ${searchResults.length} 条结果，新增 ${addedCount} 条`, 'success');
+                showStatus(`搜索完成：找到 ${searchNews.length} 条结果`, 'success');
 
             } catch (error) {
+                list.innerHTML = '<div class="empty">搜索失败，请重试</div>';
                 showStatus('搜索失败: ' + error.message, 'error');
             } finally {
                 btn.disabled = false;
-                btn.textContent = '🔍 搜索文章';
+                btn.textContent = '🔍 搜索';
             }
+        }
+
+        function toggleSelectSearch(element, index) {
+            const news = searchNews[index];
+            if (!news) return;
+            news.search_result = true;
+            const existingIndex = selectedNews.findIndex(n => (n.url && n.url === news.url) || n.title === news.title);
+
+            if (existingIndex >= 0) {
+                selectedNews.splice(existingIndex, 1);
+                element.classList.remove('selected');
+            } else {
+                selectedNews.push(news);
+                element.classList.add('selected');
+            }
+
+            updateSelectedPanel();
         }
     </script>
 </body>
