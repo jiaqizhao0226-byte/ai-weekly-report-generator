@@ -12,87 +12,95 @@ import os
 import subprocess
 
 def deduplicate_similar_news(news_list):
-    """Group and merge news about the same event using simple text similarity"""
+    """Use Qwen AI to identify and merge duplicate reports about the same event"""
     if len(news_list) <= 1:
         return news_list
-    
-    import re
-    
-    def extract_key_terms(title):
-        """Extract key company/product names from title"""
-        # Common AI companies and products
-        key_terms = []
-        title_lower = title.lower()
-        
-        companies = ['openai', 'anthropic', 'google', 'meta', 'microsoft', 'nvidia',
-                    '阿里', '字节', '腾讯', '百度', '华为', 'deepseek', '智谱', '月之暗面']
-        products = ['gpt', 'claude', 'gemini', 'llama', '千问', 'qwen', '文心', '混元', 
-                   '豆包', 'kimi', 'sora', 'midjourney']
-        
-        for term in companies + products:
-            if term in title_lower:
-                key_terms.append(term)
-        
-        # Extract numbers (funding amounts, etc)
-        numbers = re.findall(r'\d+(?:亿|万|billion|million)?', title)
-        key_terms.extend(numbers[:2])
-        
-        return set(key_terms)
-    
-    def is_similar(title1, title2):
-        """Check if two titles are about the same event"""
-        terms1 = extract_key_terms(title1)
-        terms2 = extract_key_terms(title2)
-        
-        if not terms1 or not terms2:
-            return False
-        
-        # If they share 2+ key terms, likely same event
-        common = terms1 & terms2
-        return len(common) >= 2
-    
-    # Group similar news
-    groups = []
-    used = set()
-    
-    for i, news in enumerate(news_list):
-        if i in used:
-            continue
-        
-        group = [news]
-        used.add(i)
-        
-        for j, other in enumerate(news_list[i+1:], i+1):
-            if j in used:
-                continue
-            if is_similar(news['title'], other['title']):
-                group.append(other)
-                used.add(j)
-        
-        groups.append(group)
-    
-    # Merge each group into single news item
-    merged_news = []
-    for group in groups:
-        if len(group) == 1:
-            merged_news.append(group[0])
-        else:
-            # Use the one with highest importance as base
-            group.sort(key=lambda x: x.get('importance', 0), reverse=True)
-            best = group[0].copy()
-            
-            # Combine descriptions from all sources
-            all_descs = [n.get('description', '') for n in group if n.get('description')]
-            if all_descs:
-                best['description'] = ' '.join(all_descs)[:500]
-            
-            # Mark as merged
-            best['merged_count'] = len(group)
-            best['sources'] = [n.get('source', '') for n in group]
-            
-            merged_news.append(best)
-    
-    return merged_news
+
+    api_key = os.environ.get('QWEN_API_KEY', '')
+    if not api_key:
+        return news_list
+
+    # 构造标题列表让AI识别重复组
+    lines = []
+    for i, item in enumerate(news_list):
+        lines.append(f"{i}|{item.get('title', '')}")
+
+    prompt = f"""你是新闻去重助手。以下是一批AI行业新闻标题，不同媒体可能用不同标题报道了同一事件。
+
+请找出报道同一事件的标题，将它们分组。
+每行输出一组，格式: 序号1,序号2,序号3
+只输出有重复的组（2条及以上），不重复的不要输出。
+不要输出任何解释。
+
+{chr(10).join(lines)}"""
+
+    try:
+        resp = requests.post(
+            'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+            json={
+                'model': 'qwen-turbo',
+                'messages': [{'role': 'user', 'content': prompt}],
+                'max_tokens': 1000,
+                'temperature': 0.1
+            },
+            timeout=30
+        )
+
+        if resp.status_code == 200:
+            content = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+
+            # 解析分组结果
+            merged_ids = set()
+            merge_groups = []
+            for line in content.strip().split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ids = [int(x.strip()) for x in re.findall(r'\d+', line)]
+                    ids = [i for i in ids if 0 <= i < len(news_list)]
+                    if len(ids) >= 2:
+                        merge_groups.append(ids)
+                        merged_ids.update(ids)
+                except:
+                    continue
+
+            if not merge_groups:
+                return news_list
+
+            # 合并每组，保留重要性最高的
+            result = []
+            used = set()
+
+            for group_ids in merge_groups:
+                group = [news_list[i] for i in group_ids]
+                group.sort(key=lambda x: x.get('importance', 0), reverse=True)
+                best = group[0].copy()
+
+                # 合并描述和来源
+                all_descs = [n.get('description', '') for n in group if n.get('description')]
+                if len(all_descs) > 1:
+                    best['description'] = all_descs[0][:300]
+                best['merged_count'] = len(group)
+                best['sources'] = list(set(n.get('source', '') for n in group))
+
+                result.append(best)
+                used.update(group_ids)
+
+            # 加上没被合并的
+            for i, item in enumerate(news_list):
+                if i not in used:
+                    result.append(item)
+
+            merged_total = sum(len(g) for g in merge_groups) - len(merge_groups)
+            print(f"  AI dedup: merged {merged_total} duplicate articles into {len(merge_groups)} groups")
+            return result
+
+    except Exception as e:
+        print(f"AI dedup error: {e}")
+
+    return news_list
 
 def rewrite_news_professional(title, description, date_full='', max_chars=280):
     """Rewrite news in professional tone using Qwen API"""
