@@ -1239,83 +1239,56 @@ def search_wechat_articles(keywords, days=7):
     return unique_results
 
 def get_ai_news(days=7):
-    """Get AI news from Chinese sources - fetch more pages for longer time ranges"""
+    """Get AI news from RSS feeds (WeWe RSS) as the sole source"""
     all_news = []
-    
-    # Calculate pages based on days (roughly 1 page per 3 days)
-    pages = max(3, min(15, days // 3 + 1))
-    
-    # Chinese sources via scraping
-    print("Fetching from 量子位...")
-    all_news.extend(scrape_qbitai(max_pages=pages))
-    print(f"  Got {len(all_news)} articles")
-    
-    # 36kr disabled per Kiki's request
-    # print("Fetching from 36kr...")
-    # kr_news = scrape_36kr(max_pages=pages)
-    # all_news.extend(kr_news)
-    # print(f"  Got {len(kr_news)} articles")
-    
-    # 尝试从RSS源获取（机器之心、新智元等）
+
+    # RSS 作为唯一信息源
     print("Fetching from RSS feeds...")
     rss_news = fetch_all_rss_feeds()
     all_news.extend(rss_news)
-    
-    # 备用：如果RSS没抓到，尝试直接爬取
-    if not any(n.get('source') == '机器之心' for n in all_news):
-        print("Fetching from 机器之心 (scrape fallback)...")
-        jqzx_news = scrape_jiqizhixin()
-        all_news.extend(jqzx_news)
-        print(f"  Got {len(jqzx_news)} articles")
-    
-    if not any(n.get('source') == '新智元' for n in all_news):
-        print("Fetching from 新智元 (scrape fallback)...")
-        xzy_news = scrape_xinzhiyuan()
-        all_news.extend(xzy_news)
-        print(f"  Got {len(xzy_news)} articles")
-    
+    print(f"  Total RSS articles: {len(all_news)}")
+
     # If no real news, use sample
     if not all_news:
         all_news = get_sample_news()
-    
+
     # Deduplicate by URL and title
     seen_urls = set()
     seen_titles = set()
     unique_news = []
     for item in all_news:
         url = item.get('url', '')
-        title = item.get('title', '')[:30]  # First 30 chars for title matching
-        
-        # Skip if we've seen this URL or very similar title
+        title = item.get('title', '')[:30]
+
         if url and url in seen_urls:
             continue
         if title and title in seen_titles:
             continue
-            
+
         if url:
             seen_urls.add(url)
         if title:
             seen_titles.add(title)
-            
+
         item['category'] = categorize_news(item.get('title', ''), item.get('description', ''))
         item['gaming_related'] = is_gaming_related(item.get('title', ''), item.get('description', ''))
         item['importance'] = calculate_importance(item)
-        
+
         # 尝试提取实际事件日期
         text = item.get('title', '') + ' ' + item.get('description', '')
         event_date = extract_event_date_from_content(text)
         if event_date:
             item['event_date'] = event_date
-        
-        # 过滤掉旧事重提的文章（用精确的天数范围，不额外宽限）
+
+        # 过滤掉旧事重提的文章
         if not is_timely_news(item, max_days=days):
             continue
-            
+
         unique_news.append(item)
-    
+
     # Sort by importance
     unique_news.sort(key=lambda x: x.get('importance', 0), reverse=True)
-    
+
     # Deduplicate similar news (merge articles about same event)
     unique_news = deduplicate_similar_news(unique_news)
 
@@ -1325,29 +1298,14 @@ def get_ai_news(days=7):
     for item in unique_news:
         date = item.get('date', '')
         if date and re.match(r'\d{4}-\d{2}-\d{2}', date):
-            # Has a proper date - strictly filter
             if date >= cutoff_date:
                 filtered_news.append(item)
             else:
                 print(f"  Filtered out (too old: {date}): {item.get('title', '')[:40]}...")
         else:
-            # No proper date - keep it (likely recent, will be enriched later)
             filtered_news.append(item)
 
-    # 限制每个来源最多占比，确保信源多样性
-    source_count = {}
-    max_per_source = max(15, len(filtered_news) // 4)  # 每个来源最多占1/4
-    diverse_news = []
-    for item in filtered_news:
-        src = item.get('source', '')
-        source_count[src] = source_count.get(src, 0) + 1
-        if source_count[src] <= max_per_source:
-            diverse_news.append(item)
-
-    # Fetch precise dates and images for top items
-    top_news = diverse_news[:80]
-    top_news = enrich_news_with_dates(top_news, max_fetch=30)
-
+    top_news = filtered_news[:80]
     top_news = enrich_news_with_images(top_news, max_fetch=20)
 
     return top_news
