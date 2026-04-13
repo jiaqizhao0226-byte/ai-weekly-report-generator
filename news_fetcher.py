@@ -938,7 +938,7 @@ def scrape_xinzhiyuan():
     
     return results
 
-def fetch_rss_feed(url, source_name='RSS', max_items=20):
+def fetch_rss_feed(url, source_name='RSS', max_items=200):
     """通用RSS订阅源抓取"""
     results = []
     try:
@@ -1031,7 +1031,7 @@ def fetch_all_rss_feeds():
                     print(f"Skipping excluded: {name}")
                     continue
                 if feed_id:
-                    url = f'{WEWE_RSS_BASE}/{feed_id}.rss?limit=100'
+                    url = f'{WEWE_RSS_BASE}/{feed_id}.rss?limit=500'
                     print(f"Fetching RSS: {name}...")
                     results = fetch_rss_feed(url, name)
                     all_results.extend(results)
@@ -1050,7 +1050,7 @@ def fetch_all_rss_feeds():
             continue
         # 加 limit 参数获取更多文章
         if '?limit=' not in url:
-            url = url + '?limit=100'
+            url = url + '?limit=500'
         print(f"Fetching RSS: {name}...")
         results = fetch_rss_feed(url, name)
         all_results.extend(results)
@@ -1351,7 +1351,7 @@ def get_ai_news(days=7):
         else:
             filtered_news.append(item)
 
-    top_news = filtered_news[:80]
+    top_news = filtered_news[:150]
     top_news = enrich_news_with_images(top_news, max_fetch=20)
 
     return top_news
