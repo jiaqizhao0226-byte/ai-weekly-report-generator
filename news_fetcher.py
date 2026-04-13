@@ -976,16 +976,45 @@ RSS_FEEDS = {
 }
 
 def fetch_all_rss_feeds():
-    """抓取所有配置的RSS源，自动跳过未配置（PLACEHOLDER）的占位条目"""
+    """抓取所有配置的RSS源 + 自动发现 WeWe RSS 已订阅的公众号"""
     all_results = []
+    fetched_ids = set()
+
+    # 1. 先尝试从 WeWe RSS 自动获取所有已订阅公众号
+    try:
+        resp = requests.get(f'{WEWE_RSS_BASE}/../feeds/', timeout=5)
+        if resp.status_code == 200:
+            feeds_data = resp.json()
+            print(f"WeWe RSS 发现 {len(feeds_data)} 个已订阅公众号")
+            for feed in feeds_data:
+                feed_id = feed.get('id', '')
+                name = feed.get('name', feed_id)
+                if feed_id:
+                    url = f'{WEWE_RSS_BASE}/{feed_id}.rss?limit=100'
+                    print(f"Fetching RSS: {name}...")
+                    results = fetch_rss_feed(url, name)
+                    all_results.extend(results)
+                    print(f"  Got {len(results)} articles")
+                    fetched_ids.add(feed_id)
+    except Exception as e:
+        print(f"WeWe RSS auto-discover failed: {e}, falling back to config")
+
+    # 2. 补充抓取配置中的源（跳过已抓取的和占位的）
     for name, url in RSS_FEEDS.items():
-        # 跳过未配置的占位条目
         if 'PLACEHOLDER_' in url:
             continue
+        # 检查是否已通过自动发现抓取过
+        already_fetched = any(fid in url for fid in fetched_ids)
+        if already_fetched:
+            continue
+        # 加 limit 参数获取更多文章
+        if '?limit=' not in url:
+            url = url + '?limit=100'
         print(f"Fetching RSS: {name}...")
         results = fetch_rss_feed(url, name)
         all_results.extend(results)
         print(f"  Got {len(results)} articles")
+
     return all_results
 
 def extract_event_date_from_content(text):
