@@ -599,8 +599,9 @@ def calculate_importance(news_item):
     if any(x in text for x in ['ipo', '上市', '收购', 'acquisition', '并购', '合并']):
         score += 15
     
-    # === New Product/Model Release ===
-    release_keywords = ['发布', '推出', '上线', 'release', 'launch', '开源']
+    # === New Product/Model Release or Major Change ===
+    release_keywords = ['发布', '推出', '上线', 'release', 'launch', '开源',
+                        '关停', '下线', '退场', '停服', '关闭', '弃用', '取消']
     has_release = any(x in title for x in release_keywords)
     if has_release:
         score += 12
