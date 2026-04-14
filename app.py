@@ -53,7 +53,7 @@ def generate_news_text_parts(news_item):
         content_part = f"{date}，{description}" if date else description
 
     # Soft length limit - cut at last complete sentence if too long
-    max_total = 200
+    max_total = 230
     total = len(title_part) + len(content_part)
     if total > max_total:
         # Find the last sentence-ending punctuation within limit
