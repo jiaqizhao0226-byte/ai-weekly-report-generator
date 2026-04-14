@@ -236,104 +236,55 @@ def delete_slide(prs, index):
     prs.part.drop_rel(rId)
     del prs.slides._sldIdLst[index]
 
-def fill_slide(slide, news_list):
-    """Fill a single slide with up to 2 news items"""
+def fill_slide_news(slide, news_list):
+    """Fill a slide with up to 2 news items. Finds shapes containing '新闻' text."""
     news_shapes = []
-    image_shapes = []
-    
+
     for shape in slide.shapes:
         if shape.has_text_frame:
             text = shape.text_frame.text
-            if '新闻标题' in text or '新闻内容' in text:
+            if '新闻' in text:
                 news_shapes.append(shape)
-            elif '对应图片' in text:
-                image_shapes.append(shape)
-    
+
+    # Sort top to bottom
     news_shapes.sort(key=lambda s: s.top)
-    image_shapes.sort(key=lambda s: s.top)
-    
-    for i in range(len(news_shapes)):
+
+    for i, shape in enumerate(news_shapes):
         if i < len(news_list):
-            fill_text_shape(news_shapes[i], news_list[i])
-            if i < len(image_shapes):
-                news_item = news_list[i]
-                image_url = news_item.get('image', '')
-                img_stream = None
-                
-                if image_url:
-                    # Try to download article image
-                    img_stream = download_image(image_url)
-                
-                if not img_stream:
-                    # No image or download failed - search for company/model logo
-                    print(f"  No image for: {news_item.get('title', '')[:30]}... searching logo...")
-                    img_stream = search_logo_image(news_item)
-                
-                if img_stream:
-                    # Insert image with aspect ratio preserved
-                    replace_shape_with_image(slide, image_shapes[i], img_stream)
-                else:
-                    # Still no image found, show placeholder
-                    image_shapes[i].text_frame.clear()
-                    p = image_shapes[i].text_frame.paragraphs[0]
-                    run = p.add_run()
-                    run.text = "[暂无图片]"
-                    run.font.size = Pt(10)
-                    run.font.name = '微软雅黑'
-                    run.font.color.rgb = RGBColor(128, 128, 128)
+            title_part, content_part = generate_news_text_parts(news_list[i])
+            tf = shape.text_frame
+            tf.clear()
+            p = tf.paragraphs[0]
+
+            # Title (bold)
+            run1 = p.add_run()
+            run1.text = title_part
+            run1.font.size = Pt(14)
+            run1.font.bold = True
+            run1.font.name = '华文楷体'
+            run1.font.color.rgb = RGBColor(0, 0, 0)
+
+            # Content
+            run2 = p.add_run()
+            run2.text = content_part
+            run2.font.size = Pt(14)
+            run2.font.bold = False
+            run2.font.name = '华文楷体'
+            run2.font.color.rgb = RGBColor(0, 0, 0)
         else:
-            news_shapes[i].text_frame.clear()
-            if i < len(image_shapes):
-                image_shapes[i].text_frame.clear()
-
-def duplicate_slide(prs, template_idx, insert_after_idx):
-    """Duplicate a slide by cloning its XML, insert after specified index"""
-    from copy import deepcopy
-    from lxml import etree
-    from pptx.opc.constants import RELATIONSHIP_TYPE as RT
-    import copy
-
-    template_slide = prs.slides[template_idx]
-
-    # Clone the slide XML
-    slide_layout = template_slide.slide_layout
-    new_slide = prs.slides.add_slide(slide_layout)
-
-    # Remove all default shapes from the new slide
-    for shape in list(new_slide.shapes):
-        sp = shape._element
-        sp.getparent().remove(sp)
-
-    # Deep copy all shapes from template
-    for shape in template_slide.shapes:
-        el = deepcopy(shape._element)
-        new_slide.shapes._spTree.append(el)
-
-    # Move the new slide (appended at end) to the correct position
-    # The slide was added at the end, move it to insert_after_idx + 1
-    slide_id_list = prs.slides._sldIdLst
-    new_sldId = slide_id_list[-1]  # Just added, at the end
-    slide_id_list.remove(new_sldId)
-
-    # Insert after the target position
-    target_pos = insert_after_idx + 1
-    if target_pos >= len(slide_id_list):
-        slide_id_list.append(new_sldId)
-    else:
-        slide_id_list.insert(target_pos, new_sldId)
-
-    return new_slide
+            # No news for this slot, clear it
+            shape.text_frame.clear()
 
 def generate_ppt(selected_news, output_path, date_range):
-    """Generate PPT with 5-slide template, duplicating category slides as needed"""
-    template_path = os.path.join(os.path.dirname(__file__), 'AI_template.pptx')
+    """Generate PPT: fill news into template slides, delete unused ones"""
+    template_path = os.path.join(os.path.dirname(__file__), 'AI周报模板.pptx')
     prs = Presentation(template_path)
 
     # Update cover date (slide 0)
     for shape in prs.slides[0].shapes:
         if shape.has_text_frame:
             text = shape.text_frame.text
-            if '2023年' in text or '光子' in text:
+            if '2025年' in text or '光子' in text:
                 shape.text_frame.clear()
                 p = shape.text_frame.paragraphs[0]
                 run = p.add_run()
@@ -349,75 +300,51 @@ def generate_ppt(selected_news, output_path, date_range):
         if cat in news_by_cat:
             news_by_cat[cat].append(news)
 
-    # Step 1: Duplicate slides FIRST (before filling any content)
-    # Template: 0=cover, 1=model, 2=application, 3=investment, 4=end
-    # We need to add extra slides for categories with >2 news
-    # Process in reverse so indices don't shift for earlier categories
-    offset = 0
-    extra_slides = {}  # cat -> list of (slide, news_pair)
-    for cat, base_idx in [('investment', 3), ('application', 2), ('model', 1)]:
+    # Template layout:
+    # Slide 0: cover
+    # Slide 1-3: model (each holds 2 news)
+    # Slide 4-6: application
+    # Slide 7-9: investment
+    # Slide 10: end
+    cat_config = {
+        'model':       {'start': 1, 'count': 3},
+        'application': {'start': 4, 'count': 3},
+        'investment':  {'start': 7, 'count': 3},
+    }
+
+    slides_to_delete = []
+
+    for cat in ['model', 'application', 'investment']:
+        config = cat_config[cat]
+        start = config['start']
+        count = config['count']
         cat_news = news_by_cat[cat]
-        if len(cat_news) <= 2:
-            continue
-        remaining = cat_news[2:]
-        extra_slides[cat] = []
-        for i in range(0, len(remaining), 2):
-            pair = remaining[i:i+2]
-            new_slide = duplicate_slide(prs, base_idx, base_idx + offset)
-            offset += 1
-            extra_slides[cat].append((new_slide, pair))
 
-    # Step 2: Now fill ALL slides with content
-    # Re-scan to find current slide positions (indices may have shifted)
-    for i, slide in enumerate(prs.slides):
-        for shape in slide.shapes:
-            if shape.has_text_frame:
-                text = shape.text_frame.text
-                if '模型动态' in text:
-                    cat_news = news_by_cat['model']
-                    if cat_news:
-                        fill_slide(slide, cat_news[:2])
-                    else:
-                        _fill_placeholder(slide)
-                    break
-                elif '应用动态' in text:
-                    cat_news = news_by_cat['application']
-                    if cat_news:
-                        fill_slide(slide, cat_news[:2])
-                    else:
-                        _fill_placeholder(slide)
-                    break
-                elif '投融资' in text:
-                    cat_news = news_by_cat['investment']
-                    if cat_news:
-                        fill_slide(slide, cat_news[:2])
-                    else:
-                        _fill_placeholder(slide)
-                    break
+        # How many slides needed (2 news per slide, round up)
+        slides_needed = max(1, (len(cat_news) + 1) // 2)
+        slides_needed = min(slides_needed, count)  # Can't exceed template slots
 
-    # Step 3: Fill extra (duplicated) slides
-    for cat, slide_pairs in extra_slides.items():
-        for new_slide, pair in slide_pairs:
-            fill_slide(new_slide, pair)
+        for i in range(count):
+            slide_idx = start + i
+            if i < slides_needed:
+                # Fill this slide
+                news_start = i * 2
+                pair = cat_news[news_start:news_start + 2]
+                if pair:
+                    fill_slide_news(prs.slides[slide_idx], pair)
+                else:
+                    # No news at all for this category
+                    fill_slide_news(prs.slides[slide_idx], [])
+            else:
+                # Unused slide, mark for deletion
+                slides_to_delete.append(slide_idx)
+
+    # Delete unused slides in reverse order
+    for idx in sorted(slides_to_delete, reverse=True):
+        delete_slide(prs, idx)
 
     prs.save(output_path)
     return output_path
-
-def _fill_placeholder(slide):
-    """Fill slide with 'no news' placeholder"""
-    for shape in slide.shapes:
-        if shape.has_text_frame:
-            text = shape.text_frame.text
-            if '新闻标题' in text:
-                shape.text_frame.clear()
-                p = shape.text_frame.paragraphs[0]
-                run = p.add_run()
-                run.text = "本周暂无相关重点新闻"
-                run.font.size = Pt(14)
-                run.font.name = '华文楷体'
-                run.font.color.rgb = RGBColor(128, 128, 128)
-            elif '对应图片' in text:
-                shape.text_frame.clear()
 
 # Flask routes
 @app.route('/')
