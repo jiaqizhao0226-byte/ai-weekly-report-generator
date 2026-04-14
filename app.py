@@ -24,20 +24,25 @@ app = Flask(__name__)
 CORS(app)
 
 def generate_news_text_parts(news_item):
-    """Split news into title (bold) and content (normal) parts.
-    Total length strictly limited to 200 chars to fit within PPT text boxes."""
-    # Use AI-rewritten text if available
+    """Split news into title (bold) and content (normal) parts."""
     rewritten = news_item.get('rewritten', '')
     if rewritten:
+        # 清理换行符，统一为一段话
+        rewritten = rewritten.replace('\n', ' ').replace('\r', ' ').strip()
+
         if '：' in rewritten:
             parts = rewritten.split('：', 1)
-            title_part = parts[0] + '：'
-            content_part = parts[1] if len(parts) > 1 else ''
+            title_part = parts[0].strip() + '：'
+            content_part = parts[1].strip() if len(parts) > 1 else ''
+        elif ':' in rewritten:
+            parts = rewritten.split(':', 1)
+            title_part = parts[0].strip() + '：'
+            content_part = parts[1].strip() if len(parts) > 1 else ''
         else:
-            title_part = ''
-            content_part = rewritten
+            # 没有冒号，取前25字当标题
+            title_part = rewritten[:25].strip() + '：'
+            content_part = rewritten[25:].strip()
     else:
-        # Fallback to original text
         title = news_item.get('title', '')
         description = news_item.get('description', '')
         date = news_item.get('date_full', news_item.get('date', ''))
@@ -49,8 +54,13 @@ def generate_news_text_parts(news_item):
             except:
                 pass
 
-        title_part = title + "："
+        title_part = title + '：'
         content_part = f"{date}，{description}" if date else description
+
+    # 确保title_part不为空
+    if not title_part or title_part == '：':
+        title_part = content_part[:25] + '：'
+        content_part = content_part[25:]
 
     # Soft length limit - cut at last complete sentence if too long
     max_total = 320
@@ -228,7 +238,13 @@ def fill_slide_news(slide, news_list):
             title_part, content_part = generate_news_text_parts(news_item)
             tf = shape.text_frame
             tf.clear()
+            tf.word_wrap = True
             p = tf.paragraphs[0]
+
+            # 统一行距
+            p.space_before = Pt(0)
+            p.space_after = Pt(0)
+            p.line_spacing = 1.3
 
             # Title (bold)
             run1 = p.add_run()
