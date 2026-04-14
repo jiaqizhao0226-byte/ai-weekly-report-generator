@@ -63,7 +63,7 @@ def generate_news_text_parts(news_item):
         content_part = content_part[25:]
 
     # Soft length limit - cut at last complete sentence if too long
-    max_total = 320
+    max_total = 420
     total = len(title_part) + len(content_part)
     if total > max_total:
         # Find the last sentence-ending punctuation within limit
@@ -251,7 +251,7 @@ def fill_slide_news(slide, news_list):
             run1.text = title_part
             run1.font.size = Pt(14)
             run1.font.bold = True
-            run1.font.name = '华文楷体'
+            run1.font.name = 'STKaiti'
             run1.font.color.rgb = RGBColor(0, 0, 0)
 
             # Content
@@ -259,27 +259,20 @@ def fill_slide_news(slide, news_list):
             run2.text = content_part
             run2.font.size = Pt(14)
             run2.font.bold = False
-            run2.font.name = '华文楷体'
+            run2.font.name = 'STKaiti'
             run2.font.color.rgb = RGBColor(0, 0, 0)
 
-            # Fill corresponding image placeholder
+            # Fill corresponding image placeholder (only use article's own cover image)
             if i < len(image_shapes):
                 image_url = news_item.get('image', '')
                 img_stream = None
                 if image_url:
                     img_stream = download_image(image_url)
-                if not img_stream:
-                    img_stream = search_logo_image(news_item)
                 if img_stream:
                     replace_shape_with_image(slide, image_shapes[i], img_stream)
                 else:
+                    # No cover image, clear placeholder
                     image_shapes[i].text_frame.clear()
-                    p = image_shapes[i].text_frame.paragraphs[0]
-                    run = p.add_run()
-                    run.text = "[暂无图片]"
-                    run.font.size = Pt(10)
-                    run.font.name = '微软雅黑'
-                    run.font.color.rgb = RGBColor(128, 128, 128)
         else:
             # No news for this slot, clear text and image
             shape.text_frame.clear()
@@ -309,7 +302,7 @@ def generate_ppt(selected_news, output_path, date_range):
                 run = p.add_run()
                 run.text = date_range + '  |  光子策略分析'
                 run.font.size = Pt(14)
-                run.font.name = '华文楷体'
+                run.font.name = 'STKaiti'
                 run.font.color.rgb = RGBColor(255, 255, 255)
 
     # Group by category
