@@ -122,7 +122,7 @@ def rewrite_news_professional(title, description, date_full='', max_chars=280):
         prompt = f"""请将以下AI行业新闻改写为专业、商业、中立的风格，用于企业周报PPT。
 
 要求：
-1. 总字数严格控制在150-200字（含标题），不能超过200字
+1. 总字数控制在250-300字（含标题），不能超过300字
 2. 专注于新闻事件本身的具体细节（数据、时间、参与方、技术参数等）
 3. 去除营销号/标题党风格，不要加"意义重大"、"影响深远"等空话
 4. 使用专业术语和中立客观的表述
@@ -130,8 +130,8 @@ def rewrite_news_professional(title, description, date_full='', max_chars=280):
 6. 格式：事件标题（15-25字）+中文冒号"："+ 正文描述
 7. 必须以完整句子结尾，以句号"。"收尾，绝不能中途截断{date_instruction}
 
-示例（注意字数约150字）：
-阿里发布千问3.5系列模型：2024年2月28日，阿里云正式发布千问3.5系列三款模型Qwen-3.5-7B、14B、32B。该系列采用MoE稀疏激活架构，32B模型实际激活参数仅8B。API定价为每百万Token输入0.2元、输出0.6元，支持32K上下文。模型已在魔搭社区开源。
+示例（注意字数约280字）：
+阿里发布千问3.5系列模型：2024年2月28日，阿里云正式发布千问3.5系列三款模型Qwen-3.5-7B、14B、32B，分别针对轻量部署、均衡性能和复杂任务场景。该系列采用MoE稀疏激活架构，32B模型实际激活参数仅8B，在保持高性能的同时大幅降低推理成本。在多个基准测试中，Qwen-3.5-32B的表现接近GPT-4级别，特别是在中文理解、代码生成和数学推理任务上表现突出。API定价为每百万Token输入0.2元、输出0.6元，支持32K上下文窗口。模型已在魔搭社区开源，提供HuggingFace和vLLM部署方案。
 
 原文：{original}
 事件日期：{date_full if date_full else '未知'}
@@ -147,7 +147,7 @@ def rewrite_news_professional(title, description, date_full='', max_chars=280):
             json={
                 'model': 'qwen-turbo',
                 'messages': [{'role': 'user', 'content': prompt}],
-                'max_tokens': 250,
+                'max_tokens': 400,
                 'temperature': 0.7
             },
             timeout=15
