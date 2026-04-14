@@ -1,0 +1,31 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: wewe-rss-db
+    environment:
+      MYSQL_ROOT_PASSWORD: wewerss123
+      MYSQL_DATABASE: wewe-rss
+    volumes:
+      - wewe-db-data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  wewe-rss:
+    image: cooderl/wewe-rss:latest
+    container_name: wewe-rss
+    ports:
+      - "4000:4000"
+    environment:
+      - DATABASE_URL=mysql://root:wewerss123@db:3306/wewe-rss
+      - AUTH_CODE=123456
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  wewe-db-data:
