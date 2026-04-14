@@ -1285,15 +1285,87 @@ def search_wechat_articles(keywords, days=7):
     print(f"Keyword search total: {len(unique_results)} unique articles for '{keywords}'")
     return unique_results
 
+def fetch_brave_supplement(days=7):
+    """用 Brave 搜索多组 AI 热点关键词，抓取微信公众号文章补充 RSS 漏掉的"""
+    api_key = os.environ.get('BRAVE_API_KEY', '')
+    if not api_key:
+        return []
+
+    # 覆盖各个方向的热点关键词
+    search_queries = [
+        'AI 大模型 发布 最新',
+        'OpenAI GPT Claude Anthropic 最新',
+        'AI 开源模型 发布',
+        'AI 融资 收购 上市',
+        'AI 游戏 应用',
+        'Sora Midjourney AI视频 AI图像',
+        'AI Agent 智能体',
+        '大模型 评测 屠榜 排行',
+    ]
+
+    all_results = []
+    for query in search_queries:
+        try:
+            full_query = f"site:mp.weixin.qq.com {query}"
+            resp = requests.get(
+                'https://api.search.brave.com/res/v1/web/search',
+                headers={'Accept': 'application/json', 'X-Subscription-Token': api_key},
+                params={'q': full_query, 'count': 8, 'search_lang': 'zh-hans'},
+                timeout=10
+            )
+
+            if resp.status_code == 200:
+                web_results = resp.json().get('web', {}).get('results', [])
+                for item in web_results:
+                    url = item.get('url', '')
+                    if 'mp.weixin.qq.com' not in url:
+                        continue
+
+                    title = item.get('title', '')
+                    description = item.get('description', '')
+
+                    # 提取日期
+                    date_str = ''
+                    page_age = item.get('page_age', '')
+                    if page_age:
+                        date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', page_age)
+                        if date_match:
+                            date_str = date_match.group(0)
+                    if not date_str:
+                        date_match = re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', title + description)
+                        if date_match:
+                            date_str = f"{date_match.group(1)}-{date_match.group(2).zfill(2)}-{date_match.group(3).zfill(2)}"
+                    if not date_str:
+                        date_str = datetime.now().strftime('%Y-%m-%d')
+
+                    all_results.append({
+                        'title': title,
+                        'description': description,
+                        'url': url,
+                        'source': '微信公众号(Brave)',
+                        'date': date_str,
+                        'image': item.get('thumbnail', {}).get('src', '') if isinstance(item.get('thumbnail'), dict) else ''
+                    })
+        except Exception as e:
+            print(f"  Brave search error for '{query}': {e}")
+
+    return all_results
+
 def get_ai_news(days=7):
-    """Get AI news from RSS feeds (WeWe RSS) as the sole source"""
+    """Get AI news from RSS feeds + Brave search supplement"""
     all_news = []
 
-    # RSS 作为唯一信息源
+    # 1. RSS 主力信息源
     print("Fetching from RSS feeds...")
     rss_news = fetch_all_rss_feeds()
     all_news.extend(rss_news)
     print(f"  Total RSS articles: {len(all_news)}")
+
+    # 2. Brave 搜索补充热点新闻（覆盖 RSS 漏掉的）
+    print("Supplementing with Brave search...")
+    brave_supplement = fetch_brave_supplement(days=days)
+    all_news.extend(brave_supplement)
+    print(f"  Brave supplement: {len(brave_supplement)} articles")
 
     # If no real news, use sample
     if not all_news:
