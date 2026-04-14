@@ -286,25 +286,42 @@ def fill_slide(slide, news_list):
             if i < len(image_shapes):
                 image_shapes[i].text_frame.clear()
 
-def duplicate_slide(prs, template_idx):
-    """Duplicate a slide and append it after the template slide, return the new slide"""
-    from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+def duplicate_slide(prs, template_idx, insert_after_idx):
+    """Duplicate a slide by cloning its XML, insert after specified index"""
     from copy import deepcopy
     from lxml import etree
+    from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+    import copy
 
-    template = prs.slides[template_idx]
-    slide_layout = template.slide_layout
+    template_slide = prs.slides[template_idx]
 
-    # Add a new blank slide with same layout
+    # Clone the slide XML
+    slide_layout = template_slide.slide_layout
     new_slide = prs.slides.add_slide(slide_layout)
 
-    # Copy all shapes from template to new slide
-    for shape in template.shapes:
+    # Remove all default shapes from the new slide
+    for shape in list(new_slide.shapes):
+        sp = shape._element
+        sp.getparent().remove(sp)
+
+    # Deep copy all shapes from template
+    for shape in template_slide.shapes:
         el = deepcopy(shape._element)
         new_slide.shapes._spTree.append(el)
 
-    # Remove default empty shapes that came with the layout
-    # (keep only the ones we copied)
+    # Move the new slide (appended at end) to the correct position
+    # The slide was added at the end, move it to insert_after_idx + 1
+    slide_id_list = prs.slides._sldIdLst
+    new_sldId = slide_id_list[-1]  # Just added, at the end
+    slide_id_list.remove(new_sldId)
+
+    # Insert after the target position
+    target_pos = insert_after_idx + 1
+    if target_pos >= len(slide_id_list):
+        slide_id_list.append(new_sldId)
+    else:
+        slide_id_list.insert(target_pos, new_sldId)
+
     return new_slide
 
 def generate_ppt(selected_news, output_path, date_range):
@@ -332,16 +349,11 @@ def generate_ppt(selected_news, output_path, date_range):
         if cat in news_by_cat:
             news_by_cat[cat].append(news)
 
-    # Template slides: 1=model, 2=application, 3=investment (each holds 2 news)
-    cat_slide_idx = {'model': 1, 'application': 2, 'investment': 3}
-
-    # Fill template slides first (first 2 news per category)
-    for category in ['model', 'application', 'investment']:
-        slide_idx = cat_slide_idx[category]
-        cat_news = news_by_cat[category]
-
+    # Template slides: 1=model, 2=application, 3=investment
+    # Fill first 2 news per category into template slides
+    for cat, slide_idx in [('model', 1), ('application', 2), ('investment', 3)]:
+        cat_news = news_by_cat[cat]
         if not cat_news:
-            # No news placeholder
             slide = prs.slides[slide_idx]
             for shape in slide.shapes:
                 if shape.has_text_frame:
@@ -357,29 +369,24 @@ def generate_ppt(selected_news, output_path, date_range):
                     elif '对应图片' in text:
                         shape.text_frame.clear()
         else:
-            # Fill first slide with first 2 news
             fill_slide(prs.slides[slide_idx], cat_news[:2])
 
-    # For categories with >2 news, duplicate slides and fill
-    # Process in reverse order so slide indices don't shift for earlier categories
-    for category in reversed(['model', 'application', 'investment']):
-        cat_news = news_by_cat[category]
+    # For categories with >2 news, duplicate slides
+    # Process each category, tracking current slide index offset
+    offset = 0
+    for cat, base_idx in [('model', 1), ('application', 2), ('investment', 3)]:
+        cat_news = news_by_cat[cat]
         if len(cat_news) <= 2:
             continue
 
-        base_idx = cat_slide_idx[category]
-        # Split remaining news into pairs
         remaining = cat_news[2:]
+        current_insert_pos = base_idx + offset
         for i in range(0, len(remaining), 2):
             pair = remaining[i:i+2]
-            new_slide = duplicate_slide(prs, base_idx)
-            # Update the title to keep category header
-            for shape in new_slide.shapes:
-                if shape.has_text_frame:
-                    text = shape.text_frame.text
-                    if '新闻标题' in text or '对应图片' in text:
-                        continue  # will be filled by fill_slide
+            current_insert_pos += 1
+            new_slide = duplicate_slide(prs, base_idx + offset, current_insert_pos - 1)
             fill_slide(new_slide, pair)
+            offset += 1
 
     prs.save(output_path)
     return output_path
