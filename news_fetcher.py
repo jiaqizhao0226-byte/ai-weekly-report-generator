@@ -1355,17 +1355,11 @@ def get_ai_news(days=7):
     """Get AI news from RSS feeds + Brave search supplement"""
     all_news = []
 
-    # 1. RSS 主力信息源
+    # RSS 作为唯一信息源
     print("Fetching from RSS feeds...")
     rss_news = fetch_all_rss_feeds()
     all_news.extend(rss_news)
     print(f"  Total RSS articles: {len(all_news)}")
-
-    # 2. Brave 搜索补充热点新闻（覆盖 RSS 漏掉的）
-    print("Supplementing with Brave search...")
-    brave_supplement = fetch_brave_supplement(days=days)
-    all_news.extend(brave_supplement)
-    print(f"  Brave supplement: {len(brave_supplement)} articles")
 
     # If no real news, use sample
     if not all_news:
