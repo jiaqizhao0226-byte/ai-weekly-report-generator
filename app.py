@@ -52,10 +52,21 @@ def generate_news_text_parts(news_item):
         title_part = title + "："
         content_part = f"{date}，{description}" if date else description
 
-    # Strict length limit to prevent overflow in PPT text boxes
+    # Soft length limit - cut at last complete sentence if too long
     max_total = 200
-    if len(title_part) + len(content_part) > max_total:
-        content_part = content_part[:max_total - len(title_part) - 3] + '...'
+    total = len(title_part) + len(content_part)
+    if total > max_total:
+        # Find the last sentence-ending punctuation within limit
+        max_content = max_total - len(title_part)
+        truncated = content_part[:max_content]
+        # Cut at last 。or ；
+        for punct in ['。', '；', '，']:
+            last_pos = truncated.rfind(punct)
+            if last_pos > len(truncated) // 2:  # At least keep half
+                content_part = truncated[:last_pos + 1]
+                break
+        else:
+            content_part = truncated
 
     return title_part, content_part
 
