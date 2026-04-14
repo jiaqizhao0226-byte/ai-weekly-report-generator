@@ -349,47 +349,75 @@ def generate_ppt(selected_news, output_path, date_range):
         if cat in news_by_cat:
             news_by_cat[cat].append(news)
 
-    # Template slides: 1=model, 2=application, 3=investment
-    # Fill first 2 news per category into template slides
-    for cat, slide_idx in [('model', 1), ('application', 2), ('investment', 3)]:
-        cat_news = news_by_cat[cat]
-        if not cat_news:
-            slide = prs.slides[slide_idx]
-            for shape in slide.shapes:
-                if shape.has_text_frame:
-                    text = shape.text_frame.text
-                    if '新闻标题' in text:
-                        shape.text_frame.clear()
-                        p = shape.text_frame.paragraphs[0]
-                        run = p.add_run()
-                        run.text = "本周暂无相关重点新闻"
-                        run.font.size = Pt(14)
-                        run.font.name = '华文楷体'
-                        run.font.color.rgb = RGBColor(128, 128, 128)
-                    elif '对应图片' in text:
-                        shape.text_frame.clear()
-        else:
-            fill_slide(prs.slides[slide_idx], cat_news[:2])
-
-    # For categories with >2 news, duplicate slides
-    # Process each category, tracking current slide index offset
+    # Step 1: Duplicate slides FIRST (before filling any content)
+    # Template: 0=cover, 1=model, 2=application, 3=investment, 4=end
+    # We need to add extra slides for categories with >2 news
+    # Process in reverse so indices don't shift for earlier categories
     offset = 0
-    for cat, base_idx in [('model', 1), ('application', 2), ('investment', 3)]:
+    extra_slides = {}  # cat -> list of (slide, news_pair)
+    for cat, base_idx in [('investment', 3), ('application', 2), ('model', 1)]:
         cat_news = news_by_cat[cat]
         if len(cat_news) <= 2:
             continue
-
         remaining = cat_news[2:]
-        current_insert_pos = base_idx + offset
+        extra_slides[cat] = []
         for i in range(0, len(remaining), 2):
             pair = remaining[i:i+2]
-            current_insert_pos += 1
-            new_slide = duplicate_slide(prs, base_idx + offset, current_insert_pos - 1)
-            fill_slide(new_slide, pair)
+            new_slide = duplicate_slide(prs, base_idx, base_idx + offset)
             offset += 1
+            extra_slides[cat].append((new_slide, pair))
+
+    # Step 2: Now fill ALL slides with content
+    # Re-scan to find current slide positions (indices may have shifted)
+    for i, slide in enumerate(prs.slides):
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                text = shape.text_frame.text
+                if '模型动态' in text:
+                    cat_news = news_by_cat['model']
+                    if cat_news:
+                        fill_slide(slide, cat_news[:2])
+                    else:
+                        _fill_placeholder(slide)
+                    break
+                elif '应用动态' in text:
+                    cat_news = news_by_cat['application']
+                    if cat_news:
+                        fill_slide(slide, cat_news[:2])
+                    else:
+                        _fill_placeholder(slide)
+                    break
+                elif '投融资' in text:
+                    cat_news = news_by_cat['investment']
+                    if cat_news:
+                        fill_slide(slide, cat_news[:2])
+                    else:
+                        _fill_placeholder(slide)
+                    break
+
+    # Step 3: Fill extra (duplicated) slides
+    for cat, slide_pairs in extra_slides.items():
+        for new_slide, pair in slide_pairs:
+            fill_slide(new_slide, pair)
 
     prs.save(output_path)
     return output_path
+
+def _fill_placeholder(slide):
+    """Fill slide with 'no news' placeholder"""
+    for shape in slide.shapes:
+        if shape.has_text_frame:
+            text = shape.text_frame.text
+            if '新闻标题' in text:
+                shape.text_frame.clear()
+                p = shape.text_frame.paragraphs[0]
+                run = p.add_run()
+                run.text = "本周暂无相关重点新闻"
+                run.font.size = Pt(14)
+                run.font.name = '华文楷体'
+                run.font.color.rgb = RGBColor(128, 128, 128)
+            elif '对应图片' in text:
+                shape.text_frame.clear()
 
 # Flask routes
 @app.route('/')
