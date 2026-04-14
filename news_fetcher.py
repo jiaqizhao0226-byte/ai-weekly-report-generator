@@ -953,7 +953,7 @@ def fetch_rss_feed(url, source_name='RSS', max_items=200):
             title = entry.get('title', '')
             description = entry.get('summary', entry.get('description', ''))
             # 清理HTML标签
-            description = re.sub(r'<[^>]+>', '', description)[:300]
+            description = re.sub(r'<[^>]+>', '', description)[:2000]
             
             link = entry.get('link', '')
             pub_date = ''
@@ -1446,7 +1446,7 @@ def fetch_wechat_content(url, timeout=8):
         if content:
             text = content.get_text(strip=True)
             # 取前500字作为摘要
-            return text[:500] if text else None
+            return text[:2000] if text else None
 
         # 通用fallback
         for selector in ['article', '.article-content', '.post-content', 'main']:
@@ -1454,7 +1454,7 @@ def fetch_wechat_content(url, timeout=8):
             if el:
                 text = el.get_text(strip=True)
                 if len(text) > 50:
-                    return text[:500]
+                    return text[:2000]
 
         return None
     except:
