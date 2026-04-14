@@ -28,7 +28,6 @@ def generate_news_text_parts(news_item):
     # Use AI-rewritten text if available
     rewritten = news_item.get('rewritten', '')
     if rewritten:
-        # Rewritten format is "标题：内容" - split on first colon
         if '：' in rewritten:
             parts = rewritten.split('：', 1)
             title_part = parts[0] + '：'
@@ -37,52 +36,27 @@ def generate_news_text_parts(news_item):
             title_part = ''
             content_part = rewritten
         return title_part, content_part
-    
+
     # Fallback to original text
     title = news_item.get('title', '')
     description = news_item.get('description', '')
     date = news_item.get('date_full', news_item.get('date', ''))
-    
+
     if date and '-' in date and '年' not in date:
         try:
             dt = datetime.strptime(date[:10], '%Y-%m-%d')
             date = dt.strftime('%Y年%m月%d日')
         except:
             pass
-    
+
     title_part = title + "："
     content_part = f"{date}，{description}" if date else description
-    
-    # Limit to 220 chars
+
     max_total = 220
     if len(title_part) + len(content_part) > max_total:
         content_part = content_part[:max_total - len(title_part) - 3] + '...'
-    
-    return title_part, content_part
 
-def fill_text_shape(shape, news_item):
-    """Fill shape with formatted news text - matching sample format"""
-    title_part, content_part = generate_news_text_parts(news_item)
-    
-    tf = shape.text_frame
-    tf.clear()
-    p = tf.paragraphs[0]
-    
-    # Title (bold, black, 华文楷体)
-    run1 = p.add_run()
-    run1.text = title_part
-    run1.font.size = Pt(14)
-    run1.font.bold = True
-    run1.font.name = '华文楷体'
-    run1.font.color.rgb = RGBColor(0, 0, 0)
-    
-    # Content (normal, black, 华文楷体)
-    run2 = p.add_run()
-    run2.text = content_part
-    run2.font.size = Pt(14)
-    run2.font.bold = False
-    run2.font.name = '华文楷体'
-    run2.font.color.rgb = RGBColor(0, 0, 0)
+    return title_part, content_part
 
 def download_image(url, timeout=10):
     """Download image from URL and return as BytesIO"""
@@ -90,11 +64,10 @@ def download_image(url, timeout=10):
         import requests
         from io import BytesIO
         from urllib.parse import urlparse
-        
-        # Extract domain for Referer header (bypass anti-hotlinking)
+
         parsed = urlparse(url)
         referer = f"{parsed.scheme}://{parsed.netloc}/"
-        
+
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Referer': referer,
@@ -111,34 +84,30 @@ def search_logo_image(news_item, timeout=10):
     """Search for company/model logo when article has no image"""
     import requests
     from io import BytesIO
-    
-    # Extract company/model name from title for search
+
     title = news_item.get('title', '')
-    
-    # Common AI companies and models to search for
+
     logo_keywords = [
         'OpenAI', 'Anthropic', 'Google', 'Microsoft', 'Meta', 'Apple', 'Amazon', 'Nvidia',
         '百度', '阿里', '腾讯', '字节跳动', '华为', '小米', '商汤', '科大讯飞',
-        'ChatGPT', 'GPT', 'Claude', 'Gemini', 'Llama', 'Mistral', 'Qwen', '千问', 
+        'ChatGPT', 'GPT', 'Claude', 'Gemini', 'Llama', 'Mistral', 'Qwen', '千问',
         'DeepSeek', 'Kimi', '文心', '混元', '豆包', 'Sora', 'Midjourney', 'Stable Diffusion'
     ]
-    
+
     search_term = None
     for kw in logo_keywords:
         if kw.lower() in title.lower():
             search_term = f"{kw} logo"
             break
-    
+
     if not search_term:
-        # Try to extract first meaningful noun from title
         search_term = title.split('：')[0] if '：' in title else title[:20]
         search_term = f"{search_term} logo AI"
-    
-    # Use Brave Image Search
+
     brave_api_key = os.environ.get('BRAVE_API_KEY', '')
     if not brave_api_key:
         return None
-    
+
     try:
         url = "https://api.search.brave.com/res/v1/images/search"
         headers = {
@@ -150,13 +119,12 @@ def search_logo_image(news_item, timeout=10):
             "count": 5,
             "safesearch": "strict"
         }
-        
+
         response = requests.get(url, headers=headers, params=params, timeout=timeout)
         if response.status_code == 200:
             data = response.json()
             results = data.get('results', [])
-            
-            # Try to download first valid image
+
             for result in results:
                 img_url = result.get('properties', {}).get('url') or result.get('thumbnail', {}).get('src')
                 if img_url:
@@ -166,7 +134,7 @@ def search_logo_image(news_item, timeout=10):
                         return img_stream
     except Exception as e:
         print(f"  Logo search error: {e}")
-    
+
     return None
 
 def replace_shape_with_image(slide, shape, image_stream):
@@ -174,23 +142,18 @@ def replace_shape_with_image(slide, shape, image_stream):
     try:
         from PIL import Image
         from io import BytesIO
-        
-        # Get shape position and size
+
         left = shape.left
         top = shape.top
         placeholder_width = shape.width
         placeholder_height = shape.height
-        
-        # Get original image dimensions and convert if needed
+
         image_stream.seek(0)
         img = Image.open(image_stream)
         img_width, img_height = img.size
-        
-        # Convert WebP/unsupported formats to PNG
+
         if img.format not in ['BMP', 'GIF', 'JPEG', 'PNG', 'TIFF', 'WMF']:
-            print(f"  Converting {img.format} to PNG...")
             png_stream = BytesIO()
-            # Convert to RGB if necessary (for RGBA/P mode images)
             if img.mode in ('RGBA', 'P'):
                 img = img.convert('RGBA')
                 img.save(png_stream, format='PNG')
@@ -200,30 +163,24 @@ def replace_shape_with_image(slide, shape, image_stream):
             png_stream.seek(0)
             image_stream = png_stream
         else:
-            image_stream.seek(0)  # Reset stream for pptx
-        
-        # Calculate aspect-ratio-preserving dimensions
+            image_stream.seek(0)
+
         img_ratio = img_width / img_height
         placeholder_ratio = placeholder_width / placeholder_height
-        
+
         if img_ratio > placeholder_ratio:
-            # Image is wider - fit to width
             new_width = placeholder_width
             new_height = int(placeholder_width / img_ratio)
         else:
-            # Image is taller - fit to height
             new_height = placeholder_height
             new_width = int(placeholder_height * img_ratio)
-        
-        # Center image within placeholder area
+
         new_left = left + (placeholder_width - new_width) // 2
         new_top = top + (placeholder_height - new_height) // 2
-        
-        # Remove the old shape
+
         sp = shape._element
         sp.getparent().remove(sp)
-        
-        # Add image with preserved aspect ratio
+
         slide.shapes.add_picture(image_stream, new_left, new_top, new_width, new_height)
         return True
     except Exception as e:
@@ -237,21 +194,26 @@ def delete_slide(prs, index):
     del prs.slides._sldIdLst[index]
 
 def fill_slide_news(slide, news_list):
-    """Fill a slide with up to 2 news items. Finds shapes containing '新闻' text."""
+    """Fill a slide with news items + images. Supports both 1-item and 2-item slides."""
     news_shapes = []
+    image_shapes = []
 
     for shape in slide.shapes:
         if shape.has_text_frame:
             text = shape.text_frame.text
             if '新闻' in text:
                 news_shapes.append(shape)
+            elif '图片占位' in text:
+                image_shapes.append(shape)
 
     # Sort top to bottom
     news_shapes.sort(key=lambda s: s.top)
+    image_shapes.sort(key=lambda s: s.top)
 
     for i, shape in enumerate(news_shapes):
         if i < len(news_list):
-            title_part, content_part = generate_news_text_parts(news_list[i])
+            news_item = news_list[i]
+            title_part, content_part = generate_news_text_parts(news_item)
             tf = shape.text_frame
             tf.clear()
             p = tf.paragraphs[0]
@@ -271,12 +233,41 @@ def fill_slide_news(slide, news_list):
             run2.font.bold = False
             run2.font.name = '华文楷体'
             run2.font.color.rgb = RGBColor(0, 0, 0)
+
+            # Fill corresponding image placeholder
+            if i < len(image_shapes):
+                image_url = news_item.get('image', '')
+                img_stream = None
+                if image_url:
+                    img_stream = download_image(image_url)
+                if not img_stream:
+                    img_stream = search_logo_image(news_item)
+                if img_stream:
+                    replace_shape_with_image(slide, image_shapes[i], img_stream)
+                else:
+                    image_shapes[i].text_frame.clear()
+                    p = image_shapes[i].text_frame.paragraphs[0]
+                    run = p.add_run()
+                    run.text = "[暂无图片]"
+                    run.font.size = Pt(10)
+                    run.font.name = '微软雅黑'
+                    run.font.color.rgb = RGBColor(128, 128, 128)
         else:
-            # No news for this slot, clear it
+            # No news for this slot, clear text and image
             shape.text_frame.clear()
+            if i < len(image_shapes):
+                image_shapes[i].text_frame.clear()
 
 def generate_ppt(selected_news, output_path, date_range):
-    """Generate PPT: fill news into template slides, delete unused ones"""
+    """Generate PPT: fill news into 14-slide template, delete unused slides.
+
+    Template layout:
+    0: cover
+    1-3: model double (2 news each) + 4: model single (1 news)
+    5-7: application double + 8: application single
+    9-11: investment double + 12: investment single
+    13: end
+    """
     template_path = os.path.join(os.path.dirname(__file__), 'AI周报模板.pptx')
     prs = Presentation(template_path)
 
@@ -300,44 +291,37 @@ def generate_ppt(selected_news, output_path, date_range):
         if cat in news_by_cat:
             news_by_cat[cat].append(news)
 
-    # Template layout:
-    # Slide 0: cover
-    # Slide 1-3: model (each holds 2 news)
-    # Slide 4-6: application
-    # Slide 7-9: investment
-    # Slide 10: end
     cat_config = {
-        'model':       {'start': 1, 'count': 3},
-        'application': {'start': 4, 'count': 3},
-        'investment':  {'start': 7, 'count': 3},
+        'model':       {'double': [1, 2, 3], 'single': 4},
+        'application': {'double': [5, 6, 7], 'single': 8},
+        'investment':  {'double': [9, 10, 11], 'single': 12},
     }
 
     slides_to_delete = []
 
     for cat in ['model', 'application', 'investment']:
         config = cat_config[cat]
-        start = config['start']
-        count = config['count']
+        double_slides = config['double']
+        single_slide = config['single']
         cat_news = news_by_cat[cat]
 
-        # How many slides needed (2 news per slide, round up)
-        slides_needed = max(1, (len(cat_news) + 1) // 2)
-        slides_needed = min(slides_needed, count)  # Can't exceed template slots
+        n = len(cat_news)
+        pairs = n // 2
+        has_odd = n % 2 == 1
 
-        for i in range(count):
-            slide_idx = start + i
-            if i < slides_needed:
-                # Fill this slide
+        # Fill double-slides
+        for i, slide_idx in enumerate(double_slides):
+            if i < pairs:
                 news_start = i * 2
-                pair = cat_news[news_start:news_start + 2]
-                if pair:
-                    fill_slide_news(prs.slides[slide_idx], pair)
-                else:
-                    # No news at all for this category
-                    fill_slide_news(prs.slides[slide_idx], [])
+                fill_slide_news(prs.slides[slide_idx], cat_news[news_start:news_start + 2])
             else:
-                # Unused slide, mark for deletion
                 slides_to_delete.append(slide_idx)
+
+        # Fill or delete single-slide
+        if has_odd:
+            fill_slide_news(prs.slides[single_slide], [cat_news[-1]])
+        else:
+            slides_to_delete.append(single_slide)
 
     # Delete unused slides in reverse order
     for idx in sorted(slides_to_delete, reverse=True):
@@ -384,21 +368,20 @@ def api_fetch_url():
     import requests
     from bs4 import BeautifulSoup
     import re
-    
+
     data = request.json
     url = data.get('url', '')
     category = data.get('category', 'application')
-    
+
     if not url:
         return jsonify({'success': False, 'error': '请提供链接'})
-    
+
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(url, headers=headers, timeout=15)
         response.encoding = response.apparent_encoding
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Extract title
+
         title = ''
         for selector in ['h1', 'title', '.article-title', '.post-title']:
             elem = soup.select_one(selector)
@@ -406,15 +389,12 @@ def api_fetch_url():
                 title = elem.get_text().strip()
                 if len(title) > 10:
                     break
-        
-        # Extract description
+
         description = ''
-        # Try meta description
         meta_desc = soup.select_one('meta[name="description"]')
         if meta_desc:
             description = meta_desc.get('content', '')
-        
-        # Try article content
+
         if not description or len(description) < 50:
             for selector in ['article p', '.article-content p', '.post-content p', 'main p']:
                 paragraphs = soup.select(selector)
@@ -423,8 +403,7 @@ def api_fetch_url():
                     if texts:
                         description = ' '.join(texts)[:500]
                         break
-        
-        # Extract date
+
         date_str = ''
         for selector in ['.date', '.publish-time', '.post-date', 'time[datetime]', '.article-time']:
             elem = soup.select_one(selector)
@@ -434,18 +413,15 @@ def api_fetch_url():
                 if date_match:
                     date_str = f"{date_match.group(1)}-{date_match.group(2).zfill(2)}-{date_match.group(3).zfill(2)}"
                     break
-        
-        # Extract image
+
         image = ''
         og_img = soup.select_one('meta[property="og:image"]')
         if og_img and og_img.get('content'):
             image = og_img.get('content')
-        
-        # Extract source domain
+
         from urllib.parse import urlparse
         source = urlparse(url).netloc
-        
-        # Format date display
+
         if date_str:
             try:
                 dt = datetime.strptime(date_str, '%Y-%m-%d')
@@ -459,7 +435,7 @@ def api_fetch_url():
             date_display = now.strftime('%m月%d日')
             date_full = now.strftime('%Y年%m月%d日')
             date_str = now.strftime('%Y-%m-%d')
-        
+
         news_item = {
             'title': title or '未知标题',
             'description': description,
@@ -473,9 +449,9 @@ def api_fetch_url():
             'importance': 75,
             'custom': True
         }
-        
+
         return jsonify({'success': True, 'news': news_item})
-        
+
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -484,16 +460,16 @@ def api_generate():
     data = request.json
     selected_news = data.get('news', [])
     date_range = data.get('date_range', datetime.now().strftime('%Y年%m月第%W周'))
-    
+
     # AI rewrite news in professional tone (max 220 chars each)
     selected_news = rewrite_news_batch(selected_news, max_chars=220)
-    
+
     output_dir = os.path.join(os.path.dirname(__file__), 'output')
     os.makedirs(output_dir, exist_ok=True)
-    
+
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     output_path = os.path.join(output_dir, f'AI_Weekly_Report_{timestamp}.pptx')
-    
+
     try:
         generate_ppt(selected_news, output_path, date_range)
         return jsonify({'success': True, 'filename': os.path.basename(output_path)})
@@ -505,13 +481,13 @@ def api_generate():
 def api_download():
     filename = request.args.get('file', '')
     output_dir = os.path.join(os.path.dirname(__file__), 'output')
-    
+
     if filename:
         file_path = os.path.join(output_dir, filename)
     else:
         files = sorted([f for f in os.listdir(output_dir) if f.endswith('.pptx')], reverse=True)
         file_path = os.path.join(output_dir, files[0]) if files else None
-    
+
     if file_path and os.path.exists(file_path):
         return send_file(file_path, as_attachment=True, download_name=os.path.basename(file_path))
     return jsonify({'error': 'File not found'}), 404
