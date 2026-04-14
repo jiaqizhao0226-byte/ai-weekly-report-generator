@@ -24,7 +24,8 @@ app = Flask(__name__)
 CORS(app)
 
 def generate_news_text_parts(news_item):
-    """Split news into title (bold) and content (normal) parts"""
+    """Split news into title (bold) and content (normal) parts.
+    Total length strictly limited to 200 chars to fit within PPT text boxes."""
     # Use AI-rewritten text if available
     rewritten = news_item.get('rewritten', '')
     if rewritten:
@@ -35,24 +36,24 @@ def generate_news_text_parts(news_item):
         else:
             title_part = ''
             content_part = rewritten
-        return title_part, content_part
+    else:
+        # Fallback to original text
+        title = news_item.get('title', '')
+        description = news_item.get('description', '')
+        date = news_item.get('date_full', news_item.get('date', ''))
 
-    # Fallback to original text
-    title = news_item.get('title', '')
-    description = news_item.get('description', '')
-    date = news_item.get('date_full', news_item.get('date', ''))
+        if date and '-' in date and '年' not in date:
+            try:
+                dt = datetime.strptime(date[:10], '%Y-%m-%d')
+                date = dt.strftime('%Y年%m月%d日')
+            except:
+                pass
 
-    if date and '-' in date and '年' not in date:
-        try:
-            dt = datetime.strptime(date[:10], '%Y-%m-%d')
-            date = dt.strftime('%Y年%m月%d日')
-        except:
-            pass
+        title_part = title + "："
+        content_part = f"{date}，{description}" if date else description
 
-    title_part = title + "："
-    content_part = f"{date}，{description}" if date else description
-
-    max_total = 220
+    # Strict length limit to prevent overflow in PPT text boxes
+    max_total = 200
     if len(title_part) + len(content_part) > max_total:
         content_part = content_part[:max_total - len(title_part) - 3] + '...'
 
@@ -462,7 +463,7 @@ def api_generate():
     date_range = data.get('date_range', datetime.now().strftime('%Y年%m月第%W周'))
 
     # AI rewrite news in professional tone (max 220 chars each)
-    selected_news = rewrite_news_batch(selected_news, max_chars=220)
+    selected_news = rewrite_news_batch(selected_news, max_chars=180)
 
     output_dir = os.path.join(os.path.dirname(__file__), 'output')
     os.makedirs(output_dir, exist_ok=True)
