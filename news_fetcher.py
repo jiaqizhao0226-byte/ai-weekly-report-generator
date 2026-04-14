@@ -1356,9 +1356,76 @@ def get_ai_news(days=7):
             filtered_news.append(item)
 
     top_news = filtered_news[:150]
+
+    # 批量抓取文章正文（补充RSS缺失的description）
+    top_news = enrich_news_with_content(top_news, max_fetch=50)
+
     top_news = enrich_news_with_images(top_news, max_fetch=20)
 
     return top_news
+
+def fetch_wechat_content(url, timeout=8):
+    """从微信公众号文章链接抓取正文摘要"""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(url, headers=headers, timeout=timeout)
+        if response.status_code != 200:
+            return None
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # 微信文章正文在 #js_content
+        content = soup.select_one('#js_content')
+        if content:
+            text = content.get_text(strip=True)
+            # 取前500字作为摘要
+            return text[:500] if text else None
+
+        # 通用fallback
+        for selector in ['article', '.article-content', '.post-content', 'main']:
+            el = soup.select_one(selector)
+            if el:
+                text = el.get_text(strip=True)
+                if len(text) > 50:
+                    return text[:500]
+
+        return None
+    except:
+        return None
+
+def enrich_news_with_content(news_list, max_fetch=50):
+    """批量抓取文章正文，补充缺失的description"""
+    import concurrent.futures
+
+    # 只抓没有description的文章
+    items_to_fetch = []
+    for i, item in enumerate(news_list[:max_fetch]):
+        desc = item.get('description', '').strip()
+        if not desc and item.get('url'):
+            items_to_fetch.append((i, item))
+
+    if not items_to_fetch:
+        return news_list
+
+    print(f"  Fetching content for {len(items_to_fetch)} articles...")
+
+    def fetch_one(args):
+        idx, item = args
+        content = fetch_wechat_content(item['url'])
+        return idx, content
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(fetch_one, items_to_fetch))
+
+    success = 0
+    for idx, content in results:
+        if content:
+            news_list[idx]['description'] = content
+            success += 1
+
+    print(f"  Got content for {success}/{len(items_to_fetch)} articles")
+    return news_list
 
 def format_news_for_display(news_list):
     """Format news with proper date display"""
