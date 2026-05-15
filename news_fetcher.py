@@ -102,6 +102,20 @@ def deduplicate_similar_news(news_list):
 
     return news_list
 
+def _truncate_rewrite_text(text, max_chars):
+    """Hard-limit rewritten text for PPT layout."""
+    text = (text or '').replace('\n', ' ').replace('\r', ' ').strip()
+    text = ' '.join(text.split())
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    for punct in ['。', '；', ';', '！', '？', '.', '，', ',']:
+        pos = truncated.rfind(punct)
+        if pos >= max_chars * 0.55:
+            return truncated[:pos + 1]
+    return truncated.rstrip('，,；;：:、 ') + '…'
+
+
 def rewrite_news_professional(title, description, date_full='', max_chars=280):
     """Rewrite news in professional tone using Qwen API"""
     import os
@@ -122,7 +136,7 @@ def rewrite_news_professional(title, description, date_full='', max_chars=280):
         prompt = f"""请将以下AI行业新闻改写为专业、商业、中立的风格，用于企业周报PPT。
 
 要求：
-1. 总字数控制在300-400字（含标题），不能低于300字也不能超过400字
+1. 总字数控制在{max_chars}字以内（含标题和日期），建议120-180字；宁可少写，不要超长
 2. 【最重要】只能基于原文提供的信息改写。严禁编造任何原文中没有的：版本号、数据、价格、参数、功能、时间线。原文说的是什么产品名/版本号就用什么，不要自己改编。如果原文信息不足，就简短概括即可
 3. 去除营销号/标题党风格，使用专业中立的表述。禁止在结尾加"引发行业关注"、"值得持续关注"、"意义重大"、"影响深远"等假大空的总结句，直接陈述事实即可
 4. 格式：事件标题（15-25字）+中文冒号"："+ 正文描述，全部在一行内，不要换行
@@ -152,12 +166,11 @@ def rewrite_news_professional(title, description, date_full='', max_chars=280):
         if response.status_code == 200:
             result = response.json()
             rewritten = result['choices'][0]['message']['content'].strip()
-            # Let AI handle length naturally - no hard truncation
-            return rewritten
+            return _truncate_rewrite_text(rewritten, max_chars)
         else:
-            return f"{title}：{description}"[:max_chars]
+            return _truncate_rewrite_text(f"{title}：{description}", max_chars)
     except Exception as e:
-        return f"{title}：{description}"[:max_chars]
+        return _truncate_rewrite_text(f"{title}：{description}", max_chars)
 
 def rewrite_news_batch(news_list, max_chars=220):
     """Rewrite multiple news items in parallel"""

@@ -23,6 +23,31 @@ from news_fetcher import format_news_for_display, get_ai_news, expand_news_batch
 app = Flask(__name__)
 CORS(app)
 
+PPT_NEWS_MAX_CHARS = 190
+PPT_TITLE_MAX_CHARS = 34
+
+
+def truncate_text_safely(text, max_chars, add_period=True):
+    """Hard-limit PPT text while trying to keep a complete sentence."""
+    text = (text or '').replace('\n', ' ').replace('\r', ' ').strip()
+    text = ' '.join(text.split())
+    if len(text) <= max_chars:
+        return text
+
+    truncated = text[:max_chars]
+    for punct in ['。', '；', ';', '！', '？', '.', '，', ',']:
+        pos = truncated.rfind(punct)
+        if pos >= max_chars * 0.55:
+            truncated = truncated[:pos + 1]
+            break
+    else:
+        truncated = truncated.rstrip('，,；;：:、 ') + '…'
+
+    if add_period and truncated and truncated[-1] not in '。！？.!?…':
+        truncated += '。'
+    return truncated
+
+
 def generate_news_text_parts(news_item):
     """Split news into title (bold) and content (normal) parts."""
     rewritten = news_item.get('rewritten', '')
@@ -57,26 +82,18 @@ def generate_news_text_parts(news_item):
         title_part = title + '：'
         content_part = f"{date}，{description}" if date else description
 
-    # 确保title_part不为空
+    # 确保 title_part 不为空，并对标题做硬限制
     if not title_part or title_part == '：':
         title_part = content_part[:25] + '：'
         content_part = content_part[25:]
 
-    # Soft length limit - cut at last complete sentence if too long
-    max_total = 420
-    total = len(title_part) + len(content_part)
-    if total > max_total:
-        # Find the last sentence-ending punctuation within limit
-        max_content = max_total - len(title_part)
-        truncated = content_part[:max_content]
-        # Cut at last 。or ；
-        for punct in ['。', '；', '，']:
-            last_pos = truncated.rfind(punct)
-            if last_pos > len(truncated) // 2:  # At least keep half
-                content_part = truncated[:last_pos + 1]
-                break
-        else:
-            content_part = truncated
+    title_text = title_part.rstrip('：:').strip()
+    title_text = truncate_text_safely(title_text, PPT_TITLE_MAX_CHARS, add_period=False).rstrip('。！？.!?…')
+    title_part = title_text + '：'
+
+    # PPT 版面硬限制：单条新闻总字数不能超过 PPT_NEWS_MAX_CHARS
+    max_content = max(PPT_NEWS_MAX_CHARS - len(title_part), 60)
+    content_part = truncate_text_safely(content_part, max_content, add_period=True)
 
     return title_part, content_part
 
