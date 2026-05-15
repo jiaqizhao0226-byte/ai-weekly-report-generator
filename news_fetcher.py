@@ -947,7 +947,10 @@ def fetch_rss_feed(url, source_name='RSS', max_items=200):
     results = []
     try:
         import feedparser
-        feed = feedparser.parse(url)
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        feed = feedparser.parse(response.content)
         
         for entry in feed.entries[:max_items]:
             title = entry.get('title', '')
@@ -987,6 +990,15 @@ WEWE_RSS_BASE = 'http://localhost:4000/feeds'
 
 # 分类配置：已知ID的直接使用，未配置的用 PLACEHOLDER 占位
 # 用户在 WeWe RSS 后台添加订阅后，将 PLACEHOLDER_xxx 替换为真实 ID
+PUBLIC_RSS_FEEDS = {
+    '量子位': 'https://www.qbitai.com/feed',
+    'InfoQ': 'https://www.infoq.cn/feed.xml',
+    '36氪': 'https://www.36kr.com/feed',
+    'OpenAI': 'https://openai.com/news/rss.xml',
+    'MIT Technology Review': 'https://www.technologyreview.com/feed/',
+    'VentureBeat AI': 'https://venturebeat.com/category/ai/feed/',
+}
+
 RSS_FEEDS = {
     # === AI 垂直媒体 ===
     '量子位': f'{WEWE_RSS_BASE}/MP_WXS_3236757533.rss',
@@ -1049,7 +1061,14 @@ def fetch_all_rss_feeds():
     except Exception as e:
         print(f"WeWe RSS auto-discover failed: {e}, falling back to config")
 
-    # 2. 补充抓取配置中的源（跳过已抓取的和占位的）
+    # 2. 补充抓取公共 RSS 源（不依赖本地 WeWe RSS）
+    for name, url in PUBLIC_RSS_FEEDS.items():
+        print(f"Fetching public RSS: {name}...")
+        results = fetch_rss_feed(url, name)
+        all_results.extend(results)
+        print(f"  Got {len(results)} articles")
+
+    # 3. 补充抓取配置中的本地 WeWe RSS 源（跳过已抓取的和占位的）
     for name, url in RSS_FEEDS.items():
         if 'PLACEHOLDER_' in url:
             continue
@@ -1357,19 +1376,14 @@ def fetch_brave_supplement(days=7):
     return all_results
 
 def get_ai_news(days=7):
-    """Get AI news from RSS feeds + Brave search supplement"""
+    """Get AI news from RSS feeds only."""
     all_news = []
 
-    # RSS + Brave 共同作为信息源；RSS 偶尔会因为源站更新慢而返回 0 条
+    # 默认“获取新闻”只使用 RSS 信息源；Brave 仅保留给“关键词搜索”手动使用
     print("Fetching from RSS feeds...")
     rss_news = fetch_all_rss_feeds()
     all_news.extend(rss_news)
     print(f"  Total RSS articles: {len(all_news)}")
-
-    print("Fetching Brave supplement...")
-    brave_news = fetch_brave_supplement(days=days)
-    all_news.extend(brave_news)
-    print(f"  Brave supplement articles: {len(brave_news)}")
 
     # If no real news, use sample
     if not all_news:
