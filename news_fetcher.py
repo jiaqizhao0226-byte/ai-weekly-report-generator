@@ -136,8 +136,8 @@ def rewrite_news_professional(title, description, date_full='', max_chars=280):
         prompt = f"""请将以下AI行业新闻改写为专业、商业、中立的风格，用于企业周报PPT。
 
 要求：
-1. 总字数控制在{max_chars}字以内（含标题和日期），建议120-180字；宁可少写，不要超长
-2. 【最重要】只能基于原文提供的信息改写。严禁编造任何原文中没有的：版本号、数据、价格、参数、功能、时间线。原文说的是什么产品名/版本号就用什么，不要自己改编。如果原文信息不足，就简短概括即可
+1. 总字数锁定在220-{max_chars}字之间（含标题和日期）；除非原文信息确实不足，否则不要低于220字，绝不能超过{max_chars}字
+2. 【最重要】只能基于原文提供的信息改写。严禁编造任何原文中没有的：版本号、数据、价格、参数、功能、时间线。原文说的是什么产品名/版本号就用什么，不要自己改编。如果原文信息不足，可以低于220字但必须保留已知关键信息
 3. 去除营销号/标题党风格，使用专业中立的表述。禁止在结尾加"引发行业关注"、"值得持续关注"、"意义重大"、"影响深远"等假大空的总结句，直接陈述事实即可
 4. 格式：事件标题（15-25字）+中文冒号"："+ 正文描述，全部在一行内，不要换行
 5. 必须以完整句子结尾，以句号"。"收尾，绝不能中途截断
@@ -166,7 +166,18 @@ def rewrite_news_professional(title, description, date_full='', max_chars=280):
         if response.status_code == 200:
             result = response.json()
             rewritten = result['choices'][0]['message']['content'].strip()
-            return _truncate_rewrite_text(rewritten, max_chars)
+            rewritten = _truncate_rewrite_text(rewritten, max_chars)
+
+            # Guardrail: if the model returns an overly short summary despite the prompt,
+            # fall back to a factual truncated version of the original article content.
+            min_target = min(220, max_chars)
+            fallback = _truncate_rewrite_text(
+                f"{title}：{date_full}，{description}" if date_full else f"{title}：{description}",
+                max_chars,
+            )
+            if len(rewritten) < min_target and len(fallback) > len(rewritten) + 40:
+                return fallback
+            return rewritten
         else:
             return _truncate_rewrite_text(f"{title}：{description}", max_chars)
     except Exception as e:
