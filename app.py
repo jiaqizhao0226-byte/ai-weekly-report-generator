@@ -159,6 +159,17 @@ def search_logo_image(news_item, timeout=10):
 
     return None
 
+def remove_shape(shape):
+    """Remove a shape from its slide."""
+    try:
+        sp = shape._element
+        sp.getparent().remove(sp)
+        return True
+    except Exception as e:
+        print(f"  Shape remove error: {e}")
+        return False
+
+
 def replace_shape_with_image(slide, shape, image_stream):
     """Replace a text shape with an image at the same position, preserving aspect ratio"""
     try:
@@ -271,13 +282,13 @@ def fill_slide_news(slide, news_list):
                 if img_stream:
                     replace_shape_with_image(slide, image_shapes[i], img_stream)
                 else:
-                    # No cover image, clear placeholder
-                    image_shapes[i].text_frame.clear()
+                    # No article cover image: remove the template placeholder shape entirely.
+                    remove_shape(image_shapes[i])
         else:
-            # No news for this slot, clear text and image
+            # No news for this slot, clear text and remove image placeholder
             shape.text_frame.clear()
             if i < len(image_shapes):
-                image_shapes[i].text_frame.clear()
+                remove_shape(image_shapes[i])
 
 def generate_ppt(selected_news, output_path, date_range):
     """Generate PPT: fill news into 14-slide template, delete unused slides.
