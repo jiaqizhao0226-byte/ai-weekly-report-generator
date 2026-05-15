@@ -11,13 +11,46 @@ import re
 import os
 import subprocess
 
+
+def call_gemini(prompt, max_tokens=1000, temperature=0.1):
+    """Call Google Gemini text generation API. Returns text or None."""
+    api_key = os.environ.get('GOOGLE_API_KEY', '')
+    if not api_key:
+        return None
+
+    model = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
+    try:
+        resp = requests.post(
+            url,
+            params={'key': api_key},
+            json={
+                'contents': [{'parts': [{'text': prompt}]}],
+                'generationConfig': {
+                    'temperature': temperature,
+                    'maxOutputTokens': max_tokens,
+                },
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print(f"Gemini API error: HTTP {resp.status_code} {resp.text[:180]}")
+            return None
+        data = resp.json()
+        return data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
+    except Exception as e:
+        print(f"Gemini API error: {e}")
+        return None
+
+
 def deduplicate_similar_news(news_list):
-    """Use Qwen AI to identify and merge duplicate reports about the same event"""
+    """Use Gemini/Qwen AI to identify and merge duplicate reports about the same event"""
     if len(news_list) <= 1:
         return news_list
 
+    has_gemini = bool(os.environ.get('GOOGLE_API_KEY', ''))
     api_key = os.environ.get('QWEN_API_KEY', '')
-    if not api_key:
+    if not has_gemini and not api_key:
         return news_list
 
     # 构造标题列表让AI识别重复组
@@ -35,21 +68,23 @@ def deduplicate_similar_news(news_list):
 {chr(10).join(lines)}"""
 
     try:
-        resp = requests.post(
-            'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
-            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
-            json={
-                'model': 'qwen-plus',
-                'messages': [{'role': 'user', 'content': prompt}],
-                'max_tokens': 1000,
-                'temperature': 0.1
-            },
-            timeout=30
-        )
+        content = call_gemini(prompt, max_tokens=1000, temperature=0.1) if has_gemini else None
+        if content is None and api_key:
+            resp = requests.post(
+                'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+                headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                json={
+                    'model': 'qwen-plus',
+                    'messages': [{'role': 'user', 'content': prompt}],
+                    'max_tokens': 1000,
+                    'temperature': 0.1
+                },
+                timeout=30
+            )
+            if resp.status_code == 200:
+                content = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
 
-        if resp.status_code == 200:
-            content = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
-
+        if content:
             # 解析分组结果
             merged_ids = set()
             merge_groups = []
@@ -117,13 +152,14 @@ def _truncate_rewrite_text(text, max_chars):
 
 
 def rewrite_news_professional(title, description, date_full='', max_chars=280):
-    """Rewrite news in professional tone using Qwen API"""
+    """Rewrite news in professional tone using Gemini first, Qwen fallback."""
     import os
+    has_gemini = bool(os.environ.get('GOOGLE_API_KEY', ''))
     api_key = os.environ.get('QWEN_API_KEY', '')
-    if not api_key:
+    if not has_gemini and not api_key:
         # Fallback: just truncate
         text = f"{title}：{date_full}，{description}" if date_full else f"{title}：{description}"
-        return text[:max_chars] if len(text) > max_chars else text
+        return _truncate_rewrite_text(text, max_chars)
     
     try:
         original = f"{title}。{description}" if description else title
@@ -148,24 +184,27 @@ def rewrite_news_professional(title, description, date_full='', max_chars=280):
 
 改写后："""
 
-        response = requests.post(
-            'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
-            headers={
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json'
-            },
-            json={
-                'model': 'qwen-plus',
-                'messages': [{'role': 'user', 'content': prompt}],
-                'max_tokens': 600,
-                'temperature': 0.7
-            },
-            timeout=15
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            rewritten = result['choices'][0]['message']['content'].strip()
+        rewritten = call_gemini(prompt, max_tokens=800, temperature=0.7) if has_gemini else None
+        if rewritten is None and api_key:
+            response = requests.post(
+                'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+                headers={
+                    'Authorization': f'Bearer {api_key}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': 'qwen-plus',
+                    'messages': [{'role': 'user', 'content': prompt}],
+                    'max_tokens': 600,
+                    'temperature': 0.7
+                },
+                timeout=15
+            )
+            if response.status_code == 200:
+                result = response.json()
+                rewritten = result['choices'][0]['message']['content'].strip()
+
+        if rewritten:
             rewritten = _truncate_rewrite_text(rewritten, max_chars)
 
             # Guardrail: if the model returns an overly short summary despite the prompt,
@@ -178,8 +217,7 @@ def rewrite_news_professional(title, description, date_full='', max_chars=280):
             if len(rewritten) < min_target and len(fallback) > len(rewritten) + 40:
                 return fallback
             return rewritten
-        else:
-            return _truncate_rewrite_text(f"{title}：{description}", max_chars)
+        return _truncate_rewrite_text(f"{title}：{description}", max_chars)
     except Exception as e:
         return _truncate_rewrite_text(f"{title}：{description}", max_chars)
 
@@ -188,8 +226,9 @@ def rewrite_news_batch(news_list, max_chars=220):
     import concurrent.futures
     import os
     
+    has_gemini = bool(os.environ.get('GOOGLE_API_KEY', ''))
     api_key = os.environ.get('QWEN_API_KEY', '')
-    if not api_key:
+    if not has_gemini and not api_key:
         return news_list
     
     def rewrite_one(item):
@@ -477,7 +516,7 @@ def categorize_news(title, description):
     return 'application'
 
 def ai_categorize_batch(news_list):
-    """Use Qwen API to batch categorize news and filter out irrelevant content.
+    """Use Gemini/Qwen API to batch categorize news and filter out irrelevant content.
 
     Returns the news_list with updated 'category' field.
     Items marked as 'skip' are filtered out (ads, recruitment, irrelevant).
@@ -485,9 +524,10 @@ def ai_categorize_batch(news_list):
     if not news_list:
         return news_list
 
+    has_gemini = bool(os.environ.get('GOOGLE_API_KEY', ''))
     api_key = os.environ.get('QWEN_API_KEY', '')
-    if not api_key:
-        print("Qwen API key not found, using keyword-based categorization")
+    if not has_gemini and not api_key:
+        print("AI API key not found, using keyword-based categorization")
         for item in news_list:
             item['category'] = categorize_news(item.get('title', ''), item.get('description', ''))
         return news_list
@@ -518,20 +558,25 @@ def ai_categorize_batch(news_list):
 {chr(10).join(lines)}"""
 
         try:
-            resp = requests.post(
-                'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
-                headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
-                json={
-                    'model': 'qwen-plus',
-                    'messages': [{'role': 'user', 'content': prompt}],
-                    'max_tokens': 1000,
-                    'temperature': 0.1
-                },
-                timeout=30
-            )
+            content = call_gemini(prompt, max_tokens=1000, temperature=0.1) if has_gemini else None
+            if content is None and api_key:
+                resp = requests.post(
+                    'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+                    headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                    json={
+                        'model': 'qwen-plus',
+                        'messages': [{'role': 'user', 'content': prompt}],
+                        'max_tokens': 1000,
+                        'temperature': 0.1
+                    },
+                    timeout=30
+                )
+                if resp.status_code == 200:
+                    content = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+                else:
+                    print(f"Qwen API error: HTTP {resp.status_code}")
 
-            if resp.status_code == 200:
-                content = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+            if content:
                 # 解析结果
                 for line in content.strip().split('\n'):
                     line = line.strip()
@@ -545,9 +590,9 @@ def ai_categorize_batch(news_list):
                         except (ValueError, IndexError):
                             continue
             else:
-                print(f"Qwen API error: HTTP {resp.status_code}")
+                print("AI categorize returned no content")
         except Exception as e:
-            print(f"Qwen categorize error: {e}")
+            print(f"AI categorize error: {e}")
 
         # Fallback: 未被AI分类的用关键词分类
         for item in batch:
