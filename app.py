@@ -23,7 +23,7 @@ from news_fetcher import format_news_for_display, get_ai_news, expand_news_batch
 app = Flask(__name__)
 CORS(app)
 
-PPT_NEWS_MAX_CHARS = 190
+PPT_NEWS_MAX_CHARS = 300
 PPT_TITLE_MAX_CHARS = 34
 
 
@@ -514,8 +514,8 @@ def api_generate():
     selected_news = data.get('news', [])
     date_range = data.get('date_range', datetime.now().strftime('%Y年%m月第%W周'))
 
-    # AI rewrite news in professional tone (max 220 chars each)
-    selected_news = rewrite_news_batch(selected_news, max_chars=180)
+    # AI rewrite news in professional tone, locked to PPT_NEWS_MAX_CHARS
+    selected_news = rewrite_news_batch(selected_news, max_chars=PPT_NEWS_MAX_CHARS)
 
     output_dir = os.path.join(os.path.dirname(__file__), 'output')
     os.makedirs(output_dir, exist_ok=True)
