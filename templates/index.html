@@ -627,6 +627,10 @@
                 showStatus(`找到 ${allNews.length} 条新闻，按重要性排序`, 'success');
                 
             } catch (error) {
+                ['model', 'application', 'investment'].forEach(cat => {
+                    document.getElementById(`${cat}-list`).innerHTML = '<div class="empty">搜索失败，请重试</div>';
+                    document.getElementById(`${cat}-count`).textContent = '(0)';
+                });
                 showStatus('搜索失败: ' + error.message, 'error');
             }
         }

@@ -360,10 +360,14 @@ def index():
 def api_search():
     data = request.json
     days = data.get('days', 7)
-    news = get_ai_news(days)
-    news = format_news_for_display(news)
-    news.sort(key=lambda x: x.get('importance', 0), reverse=True)
-    return jsonify({'news': news, 'count': len(news)})
+    try:
+        news = get_ai_news(days)
+        news = format_news_for_display(news)
+        news.sort(key=lambda x: x.get('importance', 0), reverse=True)
+        return jsonify({'success': True, 'news': news, 'count': len(news)})
+    except Exception as e:
+        import traceback
+        return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc(), 'news': [], 'count': 0}), 500
 
 @app.route('/api/keyword-search', methods=['POST'])
 def api_keyword_search():
